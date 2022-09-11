@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::io::{BufReader, Read};
+use std::time::Instant;
 
 #[derive(Debug)]
 struct Config<'a> {
@@ -10,42 +11,44 @@ struct Config<'a> {
     soldier: &'a State<'a>,
     firing: &'a State<'a>,
     external: &'a State<'a>,
-    rules: Vec<Rule>,
+    rules: HashMap<&'a str, HashMap<&'a str, HashMap<&'a str, &'a str>>>,
 }
 
 struct Env<'a> {
     config: &'a Config<'a>,
-    current: Vec<&'a State<'a>>,
 }
 
 impl<'a> Env<'a> {
-    fn dump(&self) {
+    fn dump(&self, current: &Vec<&'a State<'a>>) {
         print!("|");
-        for i in 1..self.current.len() - 1 {
-            print!("{0: <4}|", self.current[i].name);
+        for i in 1..current.len() - 1 {
+            print!("{0: <4}|", current[i].name);
         }
         println!();
     }
 
-    fn next_lines(&mut self) {
-        let mut next_cells = new_cells(self.current.len() - 2, self.config);
+    fn next_lines(&mut self, current: &Vec<&'a State<'a>>, next_cells: &mut Vec<&'a State<'a>>) {
+        for i in 1..current.len() - 1 {
+            let left = current[i - 1].name;
+            let center = current[i].name;
+            let right = current[i + 1].name;
 
-        for i in 1..self.current.len() - 1 {
-            let left = self.current[i - 1].name;
-            let center = self.current[i].name;
-            let right = self.current[i + 1].name;
+            let l_map = &self.config.rules;
 
-            for rule in &self.config.rules {
-                if rule.left == left && rule.center == center && rule.right == right {
-                    match self.config.states.get(&rule.next.as_str()) {
-                        Some(n) => next_cells[i] = n,
-                        _ => {}
-                    }
-                }
+            match l_map.get(left) {
+                Some(c_map) => match c_map.get(center) {
+                    Some(r_map) => match r_map.get(right) {
+                        Some(next) => {
+                            let next_state = &self.config.states[next];
+                            next_cells[i] = next_state;
+                        }
+                        None => {}
+                    },
+                    None => {}
+                },
+                None => {}
             }
         }
-
-        self.current = next_cells;
     }
 }
 
@@ -61,11 +64,11 @@ struct State<'a> {
 }
 
 #[derive(Debug)]
-struct Rule {
-    left: String,
-    center: String,
-    right: String,
-    next: String,
+struct Rule<'a> {
+    left: &'a str,
+    center: &'a str,
+    right: &'a str,
+    next: &'a str,
 }
 
 #[derive(Debug)]
@@ -110,10 +113,10 @@ fn parse_rules(line: &str, n: i32) -> (ParseState, Rule) {
         .collect();
 
     let rule = Rule {
-        left: String::from(v[0]),
-        center: String::from(v[1]),
-        right: String::from(v[2]),
-        next: String::from(v[3]),
+        left: v[0],
+        center: v[1],
+        right: v[2],
+        next: v[3],
     };
 
     if n == 1 {
@@ -127,7 +130,7 @@ fn parse_rule_file(s: &String) -> Config {
     let mut parse_state = ParseState::Begin;
     let mut config = Config {
         states: HashMap::new(),
-        rules: vec![],
+        rules: HashMap::new(),
         general: EMPTY_STATE,
         soldier: EMPTY_STATE,
         firing: EMPTY_STATE,
@@ -144,7 +147,21 @@ fn parse_rule_file(s: &String) -> Config {
             }
             ParseState::FoundRule(n) => {
                 let (next_state, rule) = parse_rules(&line, n);
-                config.rules.push(rule);
+
+                if !config.rules.contains_key(rule.left) {
+                    config.rules.insert(rule.left, HashMap::new());
+                }
+
+                let center = config.rules.get_mut(rule.left).unwrap();
+                if !center.contains_key(rule.center) {
+                    center.insert(rule.center, HashMap::new());
+                }
+
+                let right = center.get_mut(rule.center).unwrap();
+                if !right.contains_key(rule.right) {
+                    right.insert(rule.right, rule.next);
+                }
+
                 next_state
             }
         };
@@ -188,8 +205,6 @@ fn main() {
 
     let cell_size: usize;
 
-    println!("{:?}", args);
-
     if args.len() < 2 {
         cell_size = 10;
     } else {
@@ -213,19 +228,27 @@ fn main() {
         }
     }
 
-    let mut env = Env {
-        config: &config,
-        current: new_cells(cell_size, &config),
-    };
+    let mut env = Env { config: &config };
 
-    env.current[1] = config.general;
+    let mut current = new_cells(cell_size, &config);
+    let mut next = new_cells(cell_size, &config);
 
-    env.dump();
+    current[1] = config.general;
 
-    while !fired(&env.current, &config) {
-        env.next_lines();
-        env.dump();
+    let start = Instant::now();
+    env.dump(&current);
+
+    while !fired(&current, &config) {
+        env.next_lines(&current, &mut next);
+        (current, next) = (next, current);
+        env.dump(&current);
     }
 
-    println!("fired");
+    let end = start.elapsed();
+
+    println!(
+        "fired: {}.{:03}s",
+        end.as_secs(),
+        end.subsec_nanos() / 1_000_000
+    );
 }
