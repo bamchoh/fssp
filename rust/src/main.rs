@@ -211,7 +211,7 @@ fn main() {
         cell_size = args[1].parse().unwrap();
     }
 
-    let s = match read_file("./waksman-slim.rul.txt".to_owned()) {
+    let s = match read_file("../waksman-slim.rul.txt".to_owned()) {
         Ok(s) => s,
         Err(e) => panic!("fail to read file: {}", e),
     };
@@ -236,12 +236,12 @@ fn main() {
     current[1] = config.general;
 
     let start = Instant::now();
-    env.dump(&current);
+    // env.dump(&current);
 
     while !fired(&current, &config) {
         env.next_lines(&current, &mut next);
         (current, next) = (next, current);
-        env.dump(&current);
+        // env.dump(&current);
     }
 
     let end = start.elapsed();
