@@ -11,15 +11,15 @@ import (
 	"time"
 )
 
-type Rule map[string]map[string]map[string]string
+type Rule []int
 
 type Config struct {
-	States   map[string]State
+	States   []State
 	Rules    Rule
-	General  State
-	Soldier  State
-	Firing   State
-	External State
+	General  int
+	Soldier  int
+	Firing   int
+	External int
 }
 
 type State struct {
@@ -27,21 +27,30 @@ type State struct {
 	Class string
 }
 
-func parseState(scanner *bufio.Scanner, n int) map[string]State {
+func parseState(scanner *bufio.Scanner, n int) []State {
 	r := regexp.MustCompile("[\\s,]")
-	states := make(map[string]State, 0)
+	states := make([]State, 0)
 	for scanner.Scan() && n > 0 {
 		info := r.Split(scanner.Text(), -1)
 		s := State{info[0], info[len(info)-1]}
-		states[info[0]] = s
+		states = append(states, s)
 		n--
 	}
 	return states
 }
 
-func parseRule(scanner *bufio.Scanner, n int) Rule {
+func getIndex(states []State, cell string) int {
+	for i, state := range states {
+		if state.Name == cell {
+			return i
+		}
+	}
+	return -1
+}
+
+func parseRule(scanner *bufio.Scanner, n int, stateList []State) []int {
 	r := regexp.MustCompile("[\\s\\#\\-\\>]")
-	rules := make(Rule, 0)
+	rules := make([]int, 4096)
 	for scanner.Scan() && n > 0 {
 		info := r.Split(scanner.Text(), -1)
 		var states []string
@@ -52,24 +61,12 @@ func parseRule(scanner *bufio.Scanner, n int) Rule {
 			states = append(states, state)
 		}
 
-		left := states[0]
-		center := states[1]
-		right := states[2]
-		next := states[3]
+		idx := -1
 
-		if _, ok := rules[left]; !ok {
-			rules[left] = make(map[string]map[string]string)
-		}
-
-		cMap := rules[left]
-		if _, ok := cMap[center]; !ok {
-			cMap[center] = make(map[string]string)
-		}
-
-		rMap := cMap[center]
-		if _, ok := rMap[right]; !ok {
-			rMap[right] = next
-		}
+		idx = getIndex(stateList, states[0])
+		idx = idx<<4 + getIndex(stateList, states[1])
+		idx = idx<<4 + getIndex(stateList, states[2])
+		rules[idx] = getIndex(stateList, states[3])
 
 		n--
 	}
@@ -88,16 +85,16 @@ func parseRuleFile(fp io.Reader) Config {
 			}
 			config.States = parseState(scanner, n)
 
-			for _, state := range config.States {
+			for i, state := range config.States {
 				switch state.Class {
 				case "general":
-					config.General = state
+					config.General = i
 				case "soldier":
-					config.Soldier = state
+					config.Soldier = i
 				case "external":
-					config.External = state
+					config.External = i
 				case "firing":
-					config.Firing = state
+					config.Firing = i
 				}
 			}
 		}
@@ -108,58 +105,53 @@ func parseRuleFile(fp io.Reader) Config {
 			if err != nil {
 				panic(err)
 			}
-			config.Rules = parseRule(scanner, n)
+			config.Rules = parseRule(scanner, n, config.States)
 		}
 	}
 	return config
 }
 
-func firstline(config Config, size int) []string {
+func firstline(config Config, size int) []int {
 	cells := newline(config, size)
-	cells[1] = config.General.Name
+	cells[1] = config.General
 	return cells
 }
 
-func newline(config Config, size int) []string {
-	cells := make([]string, size+2)
+func newline(config Config, size int) []int {
+	cells := make([]int, size+2)
 	for i := 1; i < len(cells)-1; i++ {
-		cells[i] = config.Soldier.Name
+		cells[i] = config.Soldier
 	}
-	cells[0] = config.External.Name
-	cells[len(cells)-1] = config.External.Name
+	cells[0] = config.External
+	cells[len(cells)-1] = config.External
 	return cells
 }
 
-func dump(cells []string) {
+func dump(cells []int, config Config) {
 	fmt.Print("|")
 	for i := 1; i < len(cells)-1; i++ {
-		fmt.Printf("%4v|", cells[i])
+		fmt.Printf("%4v|", config.States[cells[i]].Name)
 	}
 	fmt.Println()
 }
 
-func firing(cells []string, config Config) bool {
+func firing(cells []int, config Config) bool {
 	for i := 1; i < len(cells)-1; i++ {
-		if cells[i] != config.Firing.Name {
+		if cells[i] != config.Firing {
 			return false
 		}
 	}
 	return true
 }
 
-func nextState(cells []string, config Config) []string {
+func nextState(cells []int, config Config) []int {
 	nextCells := newline(config, len(cells)-2)
 	for i := 1; i < len(cells)-1; i++ {
 		left := cells[i-1]
-		if cMap, ok := config.Rules[left]; ok {
-			center := cells[i]
-			if rMap, ok := cMap[center]; ok {
-				right := cells[i+1]
-				if nextState, ok := rMap[right]; ok {
-					nextCells[i] = nextState
-				}
-			}
-		}
+		center := cells[i]
+		right := cells[i+1]
+		key := (left << 8) + (center << 4) + right
+		nextCells[i] = config.Rules[key]
 	}
 	return nextCells
 }
@@ -188,11 +180,11 @@ func main() {
 
 	now := time.Now()
 
-	// dump(cells)
+	dump(cells, config)
 
 	for !firing(cells, config) {
 		cells = nextState(cells, config)
-		// dump(cells)
+		dump(cells, config)
 	}
 
 	fmt.Printf("firied: %v", time.Since(now).Seconds())
