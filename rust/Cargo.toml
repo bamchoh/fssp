@@ -8,6 +8,7 @@ edition = "2021"
 [dependencies]
 fxhash = "0.2.1"
 rustc-hash = "1.1.0"
+rayon = "1.5"
 
 [profile.release]
 lto = true

@@ -1,3 +1,4 @@
+use rayon::prelude::*;
 use std::env;
 use std::fs;
 use std::io::{BufReader, Read};
@@ -19,6 +20,14 @@ struct Config {
     rules: [usize; 4096],
 }
 
+fn dump_full(cells: &[usize], config: &Config) {
+    print!("|");
+    for i in 0..cells.len() {
+        print!("{0: <4}|", config.states[cells[i]].name);
+    }
+    println!();
+}
+
 fn dump(current: &Vec<usize>, config: &Config) {
     print!("|");
     for i in 1..current.len() - 1 {
@@ -34,25 +43,38 @@ enum ParseState {
     FoundRule(i32),
 }
 
-fn nextline<'a>(current: &Vec<usize>, config: &'a Config) -> Vec<usize> {
-    let mut next_cells = new_line(current.len() - 2, &config);
-    let mut left: usize = 0;
-    for (i, center) in current.iter().enumerate() {
-        if i == 0 {
-            left = *center;
-            continue;
-        } else if i == current.len() - 1 {
-            continue;
-        }
+fn set_next<'a>(next_cell: &mut usize, cells: &[usize], config: &'a Config) {
+    *next_cell = get_next(cells, config);
+}
 
-        let right = current[i + 1];
+fn get_next<'a>(cells: &[usize], config: &'a Config) -> usize {
+    config.rules[(cells[0] << 8) + (cells[1] << 4) + cells[2]]
+}
 
-        let next = config.rules[(left << 8) + (center << 4) + right];
-        next_cells[i] = next;
-
-        left = *center;
+fn calc_next<'a>(next_cells: &mut [usize], idx: usize, current: &[usize], config: &'a Config) {
+    let mut i = idx;
+    for cells in current.windows(3) {
+        set_next(&mut next_cells[i], cells, config);
+        i += 1;
     }
+}
 
+fn nextline<'a>(current: &Vec<usize>, next_cells: &mut Vec<usize>, config: &'a Config) {
+    calc_next(next_cells, 1, &current[..], config);
+}
+
+fn per_nextline<'a>(current: &Vec<usize>, config: &'a Config) -> Vec<usize> {
+    let mut next_cells = new_line(current.len() - 2, &config);
+    let mid_point = current.len() / 2;
+    let (first, second) = next_cells.split_at_mut(mid_point);
+    rayon::join(
+        || {
+            calc_next(first, 1, &current[..(mid_point + 1)], config);
+        },
+        || {
+            calc_next(second, 0, &current[(mid_point - 1)..], config);
+        },
+    );
     next_cells
 }
 
@@ -214,17 +236,27 @@ fn main() {
     let mut cells = first_line(cell_size, &config);
 
     let start = Instant::now();
+
+    #[cfg(debug_assertions)]
     dump(&cells, &config);
 
-    while !fired(&cells, &config) {
-        cells = nextline(&cells, &config);
+    let mut t = 0;
+    while !(fired(&cells, &config) || (t > (2 * cell_size - 2))) {
+        let mut next_cells = new_line(cells.len() - 2, &config);
+        nextline(&cells, &mut next_cells, &config);
+        cells = next_cells;
+        t += 1;
+
+        #[cfg(debug_assertions)]
         dump(&cells, &config);
     }
 
     let end = start.elapsed();
 
     println!(
-        "fired: {}.{:03}s",
+        "time: {}({}), fired: {}.{:03}s",
+        t,
+        2 * cell_size - 2,
         end.as_secs(),
         end.subsec_nanos() / 1_000_000
     );
