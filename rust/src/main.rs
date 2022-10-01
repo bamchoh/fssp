@@ -7,6 +7,8 @@ use std::time::Instant;
 #[derive(Debug, Clone)]
 struct State {
     name: String,
+    foreground: String,
+    background: String,
     class: String,
 }
 
@@ -28,10 +30,23 @@ fn dump_full(cells: &[usize], config: &Config) {
     println!();
 }
 
+fn color_code(color: &String) -> String {
+    let b = i32::from_str_radix(&color[0..2].to_string(), 16).unwrap();
+    let g = i32::from_str_radix(&color[2..4].to_string(), 16).unwrap();
+    let r = i32::from_str_radix(&color[4..6].to_string(), 16).unwrap();
+
+    format!("{};{};{}", r, g, b)
+}
+
 fn dump(cells: &[usize], config: &Config) {
     print!("|");
     for i in 1..cells.len() - 1 {
-        print!("{0: <4}|", config.states[cells[i]].name);
+        print!(
+            "\x1b[38;2;{1}m\x1b[48;2;{2}m{0: <4}\x1b[0m|",
+            config.states[cells[i]].name,
+            color_code(&config.states[cells[i]].foreground),
+            color_code(&config.states[cells[i]].background),
+        );
     }
     println!();
 }
@@ -94,6 +109,8 @@ fn parse_states(line: &str, n: i32) -> (ParseState, State) {
 
     let state = State {
         name: v[0].to_string(),
+        foreground: v[1].to_string(),
+        background: v[2].to_string(),
         class: v[3].to_string(),
     };
 
