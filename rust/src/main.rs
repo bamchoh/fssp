@@ -1,7 +1,10 @@
-use rayon::prelude::*;
 use std::env;
 use std::fs;
 use std::io::{BufReader, Read};
+use std::sync::mpsc::sync_channel;
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
 use std::time::Instant;
 
 #[derive(Debug, Clone)]
@@ -61,10 +64,13 @@ enum ParseState {
 fn calc_next<'a>(next_cells: &mut [usize], idx: usize, current: &[usize], config: &'a Config) {
     let mut i = idx;
     for cells in current.windows(3) {
-        let next = config.rules[(cells[0] << 8) + (cells[1] << 4) + cells[2]];
-        next_cells[i] = next;
+        next_cells[i] = nextcell(cells[0], cells[1], cells[2], config);
         i += 1;
     }
+}
+
+fn nextcell(left: usize, center: usize, right: usize, config: &Config) -> usize {
+    config.rules[(left << 8) + (center << 4) + right]
 }
 
 fn nextline<'a>(current: &[usize], next_cells: &mut [usize], config: &'a Config) {
@@ -190,9 +196,9 @@ fn read_file(path: String) -> Result<String, String> {
     Ok(file_content)
 }
 
-fn fired(cells: &[usize], config: &Config) -> bool {
+fn fired(cells: &[usize], firing: usize) -> bool {
     for i in 1..cells.len() - 1 {
-        if cells[i] != config.firing {
+        if cells[i] != firing {
             return false;
         }
     }
@@ -211,6 +217,85 @@ fn first_line<'a>(n: usize, config: &'a Config) -> Vec<usize> {
     let mut cells = new_line(n, config);
     cells[1] = config.general;
     cells
+}
+
+fn simulate<'a>(
+    mut current: &'a mut [usize],
+    mut next_cells: &'a mut [usize],
+    config: &'a Config,
+    n: usize,
+) -> usize {
+    let mut t = 0;
+    while !(fired(current, config.firing) || (t > ((n << 1) - 2))) {
+        nextline(current, next_cells, &config);
+        t += 1;
+        (current, next_cells) = (next_cells, current);
+
+        #[cfg(debug_assertions)]
+        dump(current, &config);
+    }
+    t
+}
+
+fn par_simulate<'a>(
+    mut current: &'a mut [usize],
+    mut next_cells: &'a mut [usize],
+    config: &'a Config,
+    n: usize,
+) -> usize {
+    thread::scope(|s| -> usize {
+        let (ltx, lrx) = sync_channel::<usize>(1);
+        let (rtx, rrx) = sync_channel::<usize>(1);
+
+        let (mut left_current, mut right_current) = current.split_at_mut(&current.len() / 2);
+        let (mut left_next, mut right_next) = next_cells.split_at_mut(&next_cells.len() / 2);
+
+        let handle1 = s.spawn(move || -> usize {
+            let mut t = 0;
+            while !(fired(left_current, config.firing) || (t > ((n << 1) - 2))) {
+                nextline(left_current, left_next, &config);
+
+                ltx.send(left_current[left_current.len() - 1]).unwrap();
+
+                let i = left_current.len() - 1;
+                let right = rrx.recv().unwrap();
+                left_next[i] = nextcell(left_current[i - 1], left_current[i], right, &config);
+
+                t += 1;
+
+                (left_current, left_next) = (left_next, left_current);
+
+                #[cfg(debug_assertions)]
+                dump(&left_current, &config);
+            }
+            t
+        });
+
+        let handle2 = s.spawn(move || -> usize {
+            let mut t = 0;
+            while !(fired(right_current, config.firing) || (t > ((n << 1) - 2))) {
+                nextline(right_current, right_next, &config);
+
+                rtx.send(right_current[0]).unwrap();
+                let left = lrx.recv().unwrap();
+                right_next[0] = nextcell(left, right_current[0], right_current[1], &config);
+
+                t += 1;
+                (right_current, right_next) = (right_next, right_current);
+
+                #[cfg(debug_assertions)]
+                dump(&right_current, &config);
+            }
+            t
+        });
+
+        let mut result = 0;
+        for h in vec![handle1, handle2] {
+            result = h.join().unwrap();
+        }
+
+        result
+    })
 }
 
 fn main() {
@@ -241,23 +326,15 @@ fn main() {
         }
     }
 
-    let mut current = &mut first_line(cell_size, &config)[..];
-    let mut next_cells = &mut new_line(cell_size, &config)[..];
+    let current = &mut first_line(cell_size, &config)[..];
+    let next_cells = &mut new_line(cell_size, &config)[..];
 
     let start = Instant::now();
 
     #[cfg(debug_assertions)]
     dump(current, &config);
 
-    let mut t = 0;
-    while !(fired(current, &config) || (t > ((cell_size << 1) - 2))) {
-        nextline(current, next_cells, &config);
-        t += 1;
-        (current, next_cells) = (next_cells, current);
-
-        #[cfg(debug_assertions)]
-        dump(current, &config);
-    }
+    let t = par_simulate(current, next_cells, &config, cell_size);
 
     let end = start.elapsed();
 
