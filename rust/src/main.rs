@@ -58,18 +58,11 @@ enum ParseState {
     FoundRule(i32),
 }
 
-fn set_next<'a>(next_cell: &mut usize, cells: &[usize], config: &'a Config) {
-    *next_cell = get_next(cells, config);
-}
-
-fn get_next<'a>(cells: &[usize], config: &'a Config) -> usize {
-    config.rules[(cells[0] << 8) + (cells[1] << 4) + cells[2]]
-}
-
 fn calc_next<'a>(next_cells: &mut [usize], idx: usize, current: &[usize], config: &'a Config) {
     let mut i = idx;
     for cells in current.windows(3) {
-        set_next(&mut next_cells[i], cells, config);
+        let next = config.rules[(cells[0] << 8) + (cells[1] << 4) + cells[2]];
+        next_cells[i] = next;
         i += 1;
     }
 }
@@ -257,7 +250,7 @@ fn main() {
     dump(current, &config);
 
     let mut t = 0;
-    while !(fired(current, &config) || (t > (2 * cell_size - 2))) {
+    while !(fired(current, &config) || (t > ((cell_size << 1) - 2))) {
         nextline(current, next_cells, &config);
         t += 1;
         (current, next_cells) = (next_cells, current);
