@@ -28,10 +28,10 @@ fn dump_full(cells: &[usize], config: &Config) {
     println!();
 }
 
-fn dump(current: &Vec<usize>, config: &Config) {
+fn dump(cells: &[usize], config: &Config) {
     print!("|");
-    for i in 1..current.len() - 1 {
-        print!("{0: <4}|", config.states[current[i]].name);
+    for i in 1..cells.len() - 1 {
+        print!("{0: <4}|", config.states[cells[i]].name);
     }
     println!();
 }
@@ -59,12 +59,11 @@ fn calc_next<'a>(next_cells: &mut [usize], idx: usize, current: &[usize], config
     }
 }
 
-fn nextline<'a>(current: &Vec<usize>, next_cells: &mut Vec<usize>, config: &'a Config) {
+fn nextline<'a>(current: &[usize], next_cells: &mut [usize], config: &'a Config) {
     calc_next(next_cells, 1, &current[..], config);
 }
 
-fn per_nextline<'a>(current: &Vec<usize>, config: &'a Config) -> Vec<usize> {
-    let mut next_cells = new_line(current.len() - 2, &config);
+fn per_nextline<'a>(current: &[usize], next_cells: &mut [usize], config: &'a Config) {
     let mid_point = current.len() / 2;
     let (first, second) = next_cells.split_at_mut(mid_point);
     rayon::join(
@@ -75,7 +74,6 @@ fn per_nextline<'a>(current: &Vec<usize>, config: &'a Config) -> Vec<usize> {
             calc_next(second, 0, &current[(mid_point - 1)..], config);
         },
     );
-    next_cells
 }
 
 fn parse_begin(line: &str) -> ParseState {
@@ -182,7 +180,7 @@ fn read_file(path: String) -> Result<String, String> {
     Ok(file_content)
 }
 
-fn fired(cells: &Vec<usize>, config: &Config) -> bool {
+fn fired(cells: &[usize], config: &Config) -> bool {
     for i in 1..cells.len() - 1 {
         if cells[i] != config.firing {
             return false;
@@ -233,22 +231,22 @@ fn main() {
         }
     }
 
-    let mut cells = first_line(cell_size, &config);
+    let mut current = &mut first_line(cell_size, &config)[..];
+    let mut next_cells = &mut new_line(cell_size, &config)[..];
 
     let start = Instant::now();
 
     #[cfg(debug_assertions)]
-    dump(&cells, &config);
+    dump(current, &config);
 
     let mut t = 0;
-    while !(fired(&cells, &config) || (t > (2 * cell_size - 2))) {
-        let mut next_cells = new_line(cells.len() - 2, &config);
-        nextline(&cells, &mut next_cells, &config);
-        cells = next_cells;
+    while !(fired(current, &config) || (t > (2 * cell_size - 2))) {
+        nextline(current, next_cells, &config);
         t += 1;
+        (current, next_cells) = (next_cells, current);
 
         #[cfg(debug_assertions)]
-        dump(&cells, &config);
+        dump(current, &config);
     }
 
     let end = start.elapsed();
