@@ -1,7 +1,12 @@
+use rayon;
+use rayon::prelude::IntoParallelIterator;
+use rayon::prelude::ParallelIterator;
 use std::env;
 use std::fs;
 use std::io::{BufReader, Read};
-use std::sync::mpsc::sync_channel;
+use std::slice::from_raw_parts_mut;
+use std::sync::mpsc::{self, channel, sync_channel};
+use std::sync::mpsc::{Receiver, Sender, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -41,9 +46,33 @@ fn color_code(color: &String) -> String {
     format!("{};{};{}", r, g, b)
 }
 
-fn dump(cells: &[usize], config: &Config) {
+fn dumpln(cells: &[usize], config: &Config) {
     print!("|");
     for i in 1..cells.len() - 1 {
+        print!(
+            "\x1b[38;2;{1}m\x1b[48;2;{2}m{0: <4}\x1b[0m|",
+            config.states[cells[i]].name,
+            color_code(&config.states[cells[i]].foreground),
+            color_code(&config.states[cells[i]].background),
+        );
+    }
+    println!();
+}
+
+fn dumpleft(cells: &[usize], config: &Config) {
+    print!("|");
+    for i in 1..cells.len() {
+        print!(
+            "\x1b[38;2;{1}m\x1b[48;2;{2}m{0: <4}\x1b[0m|",
+            config.states[cells[i]].name,
+            color_code(&config.states[cells[i]].foreground),
+            color_code(&config.states[cells[i]].background),
+        );
+    }
+}
+
+fn dumpright(cells: &[usize], config: &Config) {
+    for i in 0..cells.len() - 1 {
         print!(
             "\x1b[38;2;{1}m\x1b[48;2;{2}m{0: <4}\x1b[0m|",
             config.states[cells[i]].name,
@@ -73,8 +102,12 @@ fn nextcell(left: usize, center: usize, right: usize, config: &Config) -> usize 
     config.rules[(left << 8) + (center << 4) + right]
 }
 
-fn nextline<'a>(current: &[usize], next_cells: &mut [usize], config: &'a Config) {
-    calc_next(next_cells, 1, &current[..], config);
+fn nextline<'a>(cur: &mut [usize], nex: &mut [usize], config: &'a Config) {
+    calc_next(nex, 1, cur, config);
+}
+
+fn nextline_par<'a>(ary_pair: &mut AryPair, config: &'a Config) {
+    calc_next(ary_pair.nex, 1, ary_pair.cur, config);
 }
 
 fn per_nextline<'a>(current: &[usize], next_cells: &mut [usize], config: &'a Config) {
@@ -232,70 +265,102 @@ fn simulate<'a>(
         (current, next_cells) = (next_cells, current);
 
         #[cfg(debug_assertions)]
-        dump(current, &config);
+        dumpln(current, &config);
     }
     t
 }
 
+struct AryPair<'a> {
+    cur: &'a mut [usize],
+    nex: &'a mut [usize],
+    sender: [Option<Sender<i32>>; 2],
+    receiver: [Option<Receiver<i32>>; 2],
+}
+
+fn split<'a>(ary1: &'a mut [usize], ary2: &'a mut [usize], n: isize) -> Vec<AryPair> {
+    let ary_len = ary1.len() as isize;
+    let n = (ary_len as f64 / n as f64).ceil() as isize;
+    let mut idx_ofs = 0;
+    let mut splitted_ary: Vec<AryPair> = vec![];
+
+    while idx_ofs < ary_len {
+        let (start_idx, size_ofs) = if idx_ofs == 0 {
+            (idx_ofs, 1)
+        } else {
+            (idx_ofs - 1, 2)
+        };
+
+        let ptr1 = unsafe { ary1.as_mut_ptr().offset(start_idx) };
+        let ptr2 = unsafe { ary2.as_mut_ptr().offset(start_idx) };
+
+        let size = if n + size_ofs + start_idx < ary_len {
+            n + size_ofs
+        } else {
+            ary_len - start_idx
+        };
+
+        let sp_ary1 = unsafe { from_raw_parts_mut(ptr1, size as usize) };
+        let sp_ary2 = unsafe { from_raw_parts_mut(ptr2, size as usize) };
+
+        splitted_ary.push(AryPair {
+            cur: sp_ary1,
+            nex: sp_ary2,
+            sender: [None, None],
+            receiver: [None, None],
+        });
+
+        idx_ofs += n;
+    }
+
+    for i in 1..splitted_ary.len() {
+        let (lsend, rrecv) = channel::<i32>();
+        let (rsend, lrecv) = channel::<i32>();
+
+        splitted_ary[i - 1].sender[1] = Some(lsend);
+        splitted_ary[i].receiver[0] = Some(rrecv);
+        splitted_ary[i].sender[0] = Some(rsend);
+        splitted_ary[i - 1].receiver[1] = Some(lrecv);
+    }
+
+    splitted_ary
+}
+
 fn par_simulate<'a>(
-    mut current: &'a mut [usize],
-    mut next_cells: &'a mut [usize],
+    cur: &'a mut [usize],
+    nex: &'a mut [usize],
     config: &'a Config,
     n: usize,
 ) -> usize {
-    thread::scope(|s| -> usize {
-        let (ltx, lrx) = sync_channel::<usize>(1);
-        let (rtx, rrx) = sync_channel::<usize>(1);
+    let ary;
+    ary = split(cur, nex, rayon::current_num_threads() as isize);
 
-        let (mut left_current, mut right_current) = current.split_at_mut(&current.len() / 2);
-        let (mut left_next, mut right_next) = next_cells.split_at_mut(&next_cells.len() / 2);
+    ary.into_par_iter().for_each(|mut ary_pair| {
+        let mut t = 0;
+        while !(fired(ary_pair.cur, config.firing) || (t > ((n << 1) - 2))) {
+            nextline_par(&mut ary_pair, &config);
 
-        let handle1 = s.spawn(move || -> usize {
-            let mut t = 0;
-            while !(fired(left_current, config.firing) || (t > ((n << 1) - 2))) {
-                nextline(left_current, left_next, &config);
-
-                ltx.send(left_current[left_current.len() - 1]).unwrap();
-
-                let i = left_current.len() - 1;
-                let right = rrx.recv().unwrap();
-                left_next[i] = nextcell(left_current[i - 1], left_current[i], right, &config);
-
-                t += 1;
-
-                (left_current, left_next) = (left_next, left_current);
-
-                #[cfg(debug_assertions)]
-                dump(&left_current, &config);
+            for sender in &ary_pair.sender {
+                if let Some(ref n) = sender {
+                    n.send(t as i32).unwrap();
+                };
             }
-            t
-        });
 
-        let handle2 = s.spawn(move || -> usize {
-            let mut t = 0;
-            while !(fired(right_current, config.firing) || (t > ((n << 1) - 2))) {
-                nextline(right_current, right_next, &config);
-
-                rtx.send(right_current[0]).unwrap();
-                let left = lrx.recv().unwrap();
-                right_next[0] = nextcell(left, right_current[0], right_current[1], &config);
-
-                t += 1;
-                (right_current, right_next) = (right_next, right_current);
-
-                #[cfg(debug_assertions)]
-                dump(&right_current, &config);
+            for receiver in &ary_pair.receiver {
+                if let Some(ref n) = receiver {
+                    n.recv().unwrap();
+                };
             }
-            t
-        });
 
-        let mut result = 0;
-        for h in vec![handle1, handle2] {
-            result = h.join().unwrap();
+            (ary_pair.cur, ary_pair.nex) = (ary_pair.nex, ary_pair.cur);
+
+            t += 1;
+
+            // #[cfg(debug_assertions)]
+            // dumpleft(&left_cur, &config);
+            // println!("{}, {:?}", t, ary_pair.cur);
         }
-
-        result
-    })
+    });
+    0
 }
 
 fn main() {
@@ -329,14 +394,17 @@ fn main() {
     let current = &mut first_line(cell_size, &config)[..];
     let next_cells = &mut new_line(cell_size, &config)[..];
 
-    let start = Instant::now();
-
     #[cfg(debug_assertions)]
-    dump(current, &config);
+    dumpln(current, &config);
+
+    let start = Instant::now();
 
     let t = par_simulate(current, next_cells, &config, cell_size);
 
     let end = start.elapsed();
+
+    #[cfg(debug_assertions)]
+    dumpln(current, &config);
 
     println!(
         "time: {}({}), fired: {}.{:03}s",
