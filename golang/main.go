@@ -4,10 +4,13 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -144,16 +147,116 @@ func firing(cells []int, config Config) bool {
 	return true
 }
 
-func nextState(cells []int, config Config) []int {
-	nextCells := newline(config, len(cells)-2)
-	for i := 1; i < len(cells)-1; i++ {
-		left := cells[i-1]
-		center := cells[i]
-		right := cells[i+1]
-		key := (left << 8) + (center << 4) + right
-		nextCells[i] = config.Rules[key]
+func nextState(cur []int, nex []int, config Config) ([]int, []int) {
+	for i := 1; i < len(cur)-1; i++ {
+		nex[i] = config.Rules[(cur[i-1]<<8)+(cur[i]<<4)+cur[i+1]]
 	}
-	return nextCells
+	return nex, cur
+}
+
+func simulate(cur []int, nex []int, config Config) {
+	// dump(cur, config)
+	for !firing(cur, config) {
+		cur, nex = nextState(cur, nex, config)
+		// dump(cur, config)
+	}
+}
+
+type AryPair struct {
+	Cur         []int
+	Nex         []int
+	ToLeftCh    chan int
+	FromLeftCh  chan int
+	ToRightCh   chan int
+	FromRightCh chan int
+}
+
+func split(cur []int, nex []int, n int) []AryPair {
+	ary_len := len(cur)
+	n = int(math.Ceil(float64(ary_len) / float64(n)))
+	idx_ofs := 0
+	var splitted_ary []AryPair
+
+	for idx_ofs < ary_len {
+		var start_idx int
+		var size_ofs int
+		if idx_ofs == 0 {
+			start_idx, size_ofs = idx_ofs, 1
+		} else {
+			start_idx, size_ofs = idx_ofs-1, 2
+		}
+
+		var size int
+		if n+size_ofs+start_idx < ary_len {
+			size = n + size_ofs
+		} else {
+			size = ary_len - start_idx
+		}
+
+		splitted_ary = append(splitted_ary, AryPair{
+			cur[start_idx : start_idx+size],
+			nex[start_idx : start_idx+size],
+			nil, nil, nil, nil,
+		})
+
+		idx_ofs += n
+	}
+
+	for i := 1; i < len(splitted_ary); i++ {
+		Ch1 := make(chan int, 1)
+		splitted_ary[i-1].ToRightCh = Ch1
+		splitted_ary[i].FromLeftCh = Ch1
+
+		Ch2 := make(chan int, 1)
+		splitted_ary[i].ToLeftCh = Ch2
+		splitted_ary[i-1].FromRightCh = Ch2
+	}
+
+	return splitted_ary
+}
+
+func parNextState(aryPair AryPair, config Config, wg *sync.WaitGroup) {
+	defer wg.Done()
+	t := 0
+	for !firing(aryPair.Cur, config) {
+		aryPair.Cur, aryPair.Nex = nextState(aryPair.Cur, aryPair.Nex, config)
+		// dump(cur, config)
+
+		if aryPair.ToLeftCh != nil {
+			aryPair.ToLeftCh <- 1
+		}
+
+		if aryPair.ToRightCh != nil {
+			aryPair.ToRightCh <- 1
+		}
+
+		if aryPair.FromLeftCh != nil {
+			<-aryPair.FromLeftCh
+		}
+
+		if aryPair.FromRightCh != nil {
+			<-aryPair.FromRightCh
+		}
+
+		t++
+	}
+}
+
+func parSimulate(cur []int, nex []int, config Config) {
+	var wg sync.WaitGroup
+
+	cpus := runtime.NumCPU()
+
+	aryPairs := split(cur, nex, cpus)
+
+	for _, aryPair := range aryPairs {
+		wg.Add(1)
+		go parNextState(aryPair, config, &wg)
+	}
+
+	wg.Wait()
+
+	// dump(cur, config)
 }
 
 func main() {
@@ -176,16 +279,12 @@ func main() {
 
 	config := parseRuleFile(fp)
 
-	cells := firstline(config, size)
+	cur := firstline(config, size)
+	nex := newline(config, len(cur)-2)
 
 	now := time.Now()
 
-	dump(cells, config)
-
-	for !firing(cells, config) {
-		cells = nextState(cells, config)
-		dump(cells, config)
-	}
+	parSimulate(cur, nex, config)
 
 	fmt.Printf("firied: %v", time.Since(now).Seconds())
 }
