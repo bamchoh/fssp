@@ -15,11 +15,9 @@ end
 
 states, rules = parse_file("../waksman-slim.rul.txt")
 
-simulator = Simulator.new(states, rules, ARGV[0].to_i)
+time = Benchmark.realtime {
+	simulator = Simulator.new(states, rules, ARGV[0].to_i)
 
-puts Benchmark::CAPTION
-
-puts Benchmark.measure {
 	if dump_mode
 		puts simulator.dump
 
@@ -33,3 +31,5 @@ puts Benchmark.measure {
 		end
 	end
 }
+
+printf("%.4f s\n", time)
