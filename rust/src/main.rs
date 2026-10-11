@@ -5,11 +5,7 @@ use std::env;
 use std::fs;
 use std::io::{BufReader, Read};
 use std::slice::from_raw_parts_mut;
-use std::sync::mpsc::{self, channel, sync_channel};
-use std::sync::mpsc::{Receiver, Sender, SyncSender};
-use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::Duration;
+use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::Instant;
 
 #[derive(Debug, Clone)]
@@ -59,7 +55,7 @@ fn dumpln(cells: &[usize], config: &Config) {
     println!();
 }
 
-fn dumpleft(cells: &[usize], config: &Config) {
+fn dump(cells: &[usize], config: &Config) {
     print!("|");
     for i in 1..cells.len() {
         print!(
@@ -277,27 +273,32 @@ struct AryPair<'a> {
     receiver: [Option<Receiver<i32>>; 2],
 }
 
-fn split<'a>(ary1: &'a mut [usize], ary2: &'a mut [usize], n: isize) -> Vec<AryPair> {
+fn split<'a>(ary1: &'a mut [usize], ary2: &'a mut [usize], n: isize) -> Vec<AryPair<'a>> {
     let ary_len = ary1.len() as isize;
-    let n = (ary_len as f64 / n as f64).ceil() as isize;
-    let mut idx_ofs = 0;
+    let real_len = ary_len - 2;
+
+    // 実セル(1..real_len)を各スレッドに割り当てる。
+    // slice は「左隣セル + 実セル群 + 右隣セル」で構成するため、
+    // 必ず slice 長 >= 3(interior に実セルが >= 1)になるようにする。
+    let segments = if n > real_len { real_len } else { n };
+    let chunk = ((real_len as f64 / segments as f64).ceil() as isize).max(1);
+
+    let mut idx_ofs = 1; // 未割り当ての実セルの先頭
     let mut splitted_ary: Vec<AryPair> = vec![];
 
-    while idx_ofs < ary_len {
-        let (start_idx, size_ofs) = if idx_ofs == 0 {
-            (idx_ofs, 1)
-        } else {
-            (idx_ofs - 1, 2)
-        };
+    while idx_ofs <= real_len {
+        let mut cell_end = idx_ofs + chunk;
+        if cell_end > real_len + 1 {
+            cell_end = real_len + 1;
+        }
+
+        let start_idx = idx_ofs - 1; // 左隣セル(先頭スライスは外部セル側の 0 から)
+        let end_idx = cell_end + 1; // 右隣セル
 
         let ptr1 = unsafe { ary1.as_mut_ptr().offset(start_idx) };
         let ptr2 = unsafe { ary2.as_mut_ptr().offset(start_idx) };
 
-        let size = if n + size_ofs + start_idx < ary_len {
-            n + size_ofs
-        } else {
-            ary_len - start_idx
-        };
+        let size = end_idx - start_idx;
 
         let sp_ary1 = unsafe { from_raw_parts_mut(ptr1, size as usize) };
         let sp_ary2 = unsafe { from_raw_parts_mut(ptr2, size as usize) };
@@ -309,7 +310,7 @@ fn split<'a>(ary1: &'a mut [usize], ary2: &'a mut [usize], n: isize) -> Vec<AryP
             receiver: [None, None],
         });
 
-        idx_ofs += n;
+        idx_ofs = cell_end;
     }
 
     for i in 1..splitted_ary.len() {
@@ -332,7 +333,11 @@ fn par_simulate<'a>(
     n: usize,
 ) -> usize {
     let ary;
-    ary = split(cur, nex, rayon::current_num_threads() as isize);
+    if n > 100 {
+        ary = split(cur, nex, rayon::current_num_threads() as isize);
+    } else {
+        ary = split(cur, nex, 2);
+    }
 
     ary.into_par_iter().for_each(|mut ary_pair| {
         let mut t = 0;
@@ -354,10 +359,6 @@ fn par_simulate<'a>(
             (ary_pair.cur, ary_pair.nex) = (ary_pair.nex, ary_pair.cur);
 
             t += 1;
-
-            // #[cfg(debug_assertions)]
-            // dumpleft(&left_cur, &config);
-            // println!("{}, {:?}", t, ary_pair.cur);
         }
     });
     0
@@ -400,6 +401,10 @@ fn main() {
     let start = Instant::now();
 
     let t = par_simulate(current, next_cells, &config, cell_size);
+
+    if !fired(current, config.firing) {
+        println!("NOT SYNCED");
+    }
 
     let end = start.elapsed();
 
