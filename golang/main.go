@@ -173,33 +173,37 @@ type AryPair struct {
 
 func split(cur []int, nex []int, n int) []AryPair {
 	ary_len := len(cur)
-	n = int(math.Ceil(float64(ary_len) / float64(n)))
-	idx_ofs := 0
+	real_len := ary_len - 2
+
+	// 実セル(1..real_len)を各 goroutine に割り当てる。
+	// slice は「左隣セル + 実セル群 + 右隣セル」で構成するため、
+	// 必ず slice 長 >= 3 (interior に実セルが >= 1) になるようにする。
+	if n > real_len {
+		n = real_len
+	}
+	n = int(math.Ceil(float64(real_len) / float64(n)))
+	if n < 1 {
+		n = 1
+	}
+	cell_ofs := 1 // 未割り当ての実セルの先頭
 	var splitted_ary []AryPair
 
-	for idx_ofs < ary_len {
-		var start_idx int
-		var size_ofs int
-		if idx_ofs == 0 {
-			start_idx, size_ofs = idx_ofs, 1
-		} else {
-			start_idx, size_ofs = idx_ofs-1, 2
+	for cell_ofs <= real_len {
+		cell_end := cell_ofs + n
+		if cell_end > real_len+1 {
+			cell_end = real_len + 1
 		}
 
-		var size int
-		if n+size_ofs+start_idx < ary_len {
-			size = n + size_ofs
-		} else {
-			size = ary_len - start_idx
-		}
+		start_idx := cell_ofs - 1 // 左隣セル(先頭スライスは外部セル側の 0 から)
+		end_idx := cell_end + 1   // 右隣セル
 
 		splitted_ary = append(splitted_ary, AryPair{
-			cur[start_idx : start_idx+size],
-			nex[start_idx : start_idx+size],
+			cur[start_idx:end_idx],
+			nex[start_idx:end_idx],
 			nil, nil, nil, nil,
 		})
 
-		idx_ofs += n
+		cell_ofs = cell_end
 	}
 
 	for i := 1; i < len(splitted_ary); i++ {
