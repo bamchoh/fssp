@@ -104,8 +104,19 @@
 | u8 スカラー | 1.03ns | **効果なし**(メモリは既に全キャッシュ内、律速は計算側) |
 | **AVX2 gather (u8)** | **0.235ns** | **4.4x**(≒ 1 cycle/cell、n=20k〜200k で一定) |
 
-- 検証: `check` で u8 スカラーと avx2 の進化を 1000 ステップ比較し byte 等価(n=2000・n=4097 で OK、32 セル chunk の scalar tail も含む)。
-- 並列 rust(現行 3.79s @100k)に置き換えた場合の推定: 3.79 / 4.4 ≒ **0.9s** @100k。同期分(約0.9s)と合わせ ~1.5s の可能性。
+- **リポジトリ rust への組み込み完了(2026-10-13)**: 全セル `usize → u8`(パーサ・fired・new_line/first_line も)、ルール `[u8; 8192]`、`simd::step`(32 セル chunk + scalar tail)を `nextline_par` に導入。`is_x86_feature_detected!("avx2")` を main で 1 回判定してフォールバック(スカラー)を保持。size 2..64+256 全通過、size 10 の最終状態は ruby と一致。
+
+### SIMD 導入後の並列実測(rust、16論理):
+
+| size | 変更前(スカラ) | AVX2 | 倍率 |
+|---|---|---|---|
+| 10,000 | 0.13s | 0.11s | 1.2x |
+| 25,000 | 0.52s | 0.36s | 1.4x |
+| 50,000 | 1.30s | 0.75s | 1.7x |
+| 100,000 | 3.79s | **1.82s** | **2.1x** |
+| 200,000 | 12.6s | **5.35s** | **2.3x** |
+
+golang(4.29s @100k、16.6s @200k)に対して rust AVX2 は **2.3〜3.1x**。この規模では計算 ≈ 0.4s、同期 ≈ 0.9s+ と同期が再び主要因になりつつある(次の最適化対象)。
 - 32 セル/chunk の構成: 3 loadu + unpacklo/hi×3 + idx 計算(slli/add) + 4 cvtepu16 + 4 gathers + 対応づけ(shuffle+and)4 + half 内詰め(extract+bslli+or)→ 32B storeu。末尾は scalar。
 - AVX-512(zmm gather、16レーン/inst)はこの CPU(Tiger Lake)で可用だが 512bit 演習時のダウンクロックがあり、AVX2 版を先に採るのが無難。Rust は stable intrinsics(`std::arch::x86_64`)で足りる(nightly 不要)。
 - スクラッチの main.rs はバッチの検証用として残すこと(リポジトリ外)。
