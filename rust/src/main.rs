@@ -583,25 +583,29 @@ fn main() {
     let mut current = first_line(cell_size, &config);
     let mut next_cells = new_line(cell_size, &config);
 
-    #[cfg(debug_assertions)]
-    dumpln(&current, &config);
-
     let start = Instant::now();
+    let end;
 
     if dump_mode {
+        // ダンプ本体が初期状態と最終状態を出すので、debug 表示は重複になる
+        // この分岐では出さない
         simulate_dump(&mut current, &mut next_cells, &config, cell_size, color_mode);
+        end = start.elapsed();
     } else {
+        #[cfg(debug_assertions)]
+        dumpln(&current, &config);
+
         par_simulate(&mut current[..], &mut next_cells[..], &config, cell_size, use_avx2);
 
         if !fired(&current, config.firing) {
             println!("NOT SYNCED");
         }
+
+        end = start.elapsed();
+
+        #[cfg(debug_assertions)]
+        dumpln(&current, &config);
     }
-
-    let end = start.elapsed();
-
-    #[cfg(debug_assertions)]
-    dumpln(&current, &config);
 
     println!(
         "time: {}.{:03}s",
