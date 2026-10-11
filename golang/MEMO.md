@@ -92,6 +92,24 @@
 2. **2 ステップ LUT**: t+2 の値を (i−2..i+2) の 5 セル入力の 17^5 ≒ 1.4MB 表で 1 検索に。2 ステップに 1 検索で ~1.5-2x(表構築が重い、実装要検討)。
 3. **複数の独立実行を同時に回す**: 1 実行のレイテンシはフロア(物理 8 コア ~2.5s)に張り付いているが、ベンチマーク用途なら実行の並行数でスループットは線形に伸びる。
 
+### SIMD 検討(2026-10-13、rust スクラッチプロトタイプ実測)
+
+内側ループは `idx = (l<<8)+(c<<4)+r` のランダムなテーブル参照が本体で、ベクタ化には **AVX2 gather(vpgatherdd、scale=1 のバイトオフセット参照)** を使う。表は u8 配置のまま(8KB、L1 常駐)、gathered dword の下位バイト = 状態を回収。u8 化(セル・表とも)は AVX2 の前提でもある。
+
+スクラッチ(`/tmp/fssp-simd`、sequential・同期なし、合成ルールでバリアント間の進化バイト等価チェック済み):
+
+| 変種 | per-op | 備考 |
+|---|---|---|
+| usize スカラー(現行と同形) | 1.03ns | 1 op ≒ 4.3 cycle |
+| u8 スカラー | 1.03ns | **効果なし**(メモリは既に全キャッシュ内、律速は計算側) |
+| **AVX2 gather (u8)** | **0.235ns** | **4.4x**(≒ 1 cycle/cell、n=20k〜200k で一定) |
+
+- 検証: `check` で u8 スカラーと avx2 の進化を 1000 ステップ比較し byte 等価(n=2000・n=4097 で OK、32 セル chunk の scalar tail も含む)。
+- 並列 rust(現行 3.79s @100k)に置き換えた場合の推定: 3.79 / 4.4 ≒ **0.9s** @100k。同期分(約0.9s)と合わせ ~1.5s の可能性。
+- 32 セル/chunk の構成: 3 loadu + unpacklo/hi×3 + idx 計算(slli/add) + 4 cvtepu16 + 4 gathers + 対応づけ(shuffle+and)4 + half 内詰め(extract+bslli+or)→ 32B storeu。末尾は scalar。
+- AVX-512(zmm gather、16レーン/inst)はこの CPU(Tiger Lake)で可用だが 512bit 演習時のダウンクロックがあり、AVX2 版を先に採るのが無難。Rust は stable intrinsics(`std::arch::x86_64`)で足りる(nightly 不要)。
+- スクラッチの main.rs はバッチの検証用として残すこと(リポジトリ外)。
+
 ### golang vs rust ベンチマーク(同一条件: 100k/16論理/連続実行)
 
 | size | golang | rust |
