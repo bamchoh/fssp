@@ -370,6 +370,32 @@ fn first_line(n: usize, config: &Config) -> Vec<u8> {
     cells
 }
 
+// ruby の Simulator#dump と同じ書式(状態名を | でつなぐ、色なし)。
+// -d モードで ruby と diff 比較できるようにするため。
+fn dump_plain(cells: &[u8], config: &Config) {
+    let names: Vec<&str> = cells[1..cells.len() - 1]
+        .iter()
+        .map(|&c| config.states[c as usize].name.as_str())
+        .collect();
+    println!("{}", names.join("|"));
+}
+
+// -d モード用: 逐次で 1 ステップごとに途中経過を出力する。
+// 出力は「初期配置 + 1〜発火ステップまでの各行」で ruby -d と同じ列になる。
+// (並列ではワーカー間のトークン同期の中で全体を一つのタイミングで
+//  参照できる地点がないため、ダンプモードは逐次実行にしている)
+fn simulate_dump(current: &mut Vec<u8>, next_cells: &mut Vec<u8>, config: &Config, n: usize) -> usize {
+    dump_plain(current, config);
+    let mut t = 0;
+    while !fired(current, config.firing) && t <= ((n << 1) - 2) {
+        nextline(current, next_cells, config);
+        t += 1;
+        std::mem::swap(current, next_cells);
+        dump_plain(current, config);
+    }
+    t
+}
+
 fn simulate<'a>(
     mut current: &'a mut [u8],
     mut next_cells: &'a mut [u8],
@@ -489,13 +515,24 @@ fn par_simulate<'a>(
 fn main() {
     let args: Vec<String> = env::args().collect();
 
-    let cell_size: usize;
+    // 使い方: fssp.exe [size] [-d]
+    //   -d / --dump : 逐次実行して 1 ステップごとに途中経過を出力
+    //   (ruby の -d と同じ書式。並行実行のダンプとは干渉するため逐次にする)
+    let mut dump_mode = false;
+    let mut size_arg: Option<usize> = None;
 
-    if args.len() < 2 {
-        cell_size = 10;
-    } else {
-        cell_size = args[1].parse().unwrap();
+    for a in args.iter().skip(1) {
+        match a.as_str() {
+            "-d" | "--dump" => dump_mode = true,
+            v => {
+                if size_arg.is_none() {
+                    size_arg = v.parse().ok();
+                }
+            }
+        }
     }
+
+    let cell_size = size_arg.unwrap_or(10);
 
     let s = match read_file("../waksman-slim.rul.txt".to_owned()) {
         Ok(s) => s,
@@ -519,24 +556,28 @@ fn main() {
     #[cfg(not(target_arch = "x86_64"))]
     let use_avx2 = false;
 
-    let current = &mut first_line(cell_size, &config)[..];
-    let next_cells = &mut new_line(cell_size, &config)[..];
+    let mut current = first_line(cell_size, &config);
+    let mut next_cells = new_line(cell_size, &config);
 
     #[cfg(debug_assertions)]
-    dumpln(current, &config);
+    dumpln(&current, &config);
 
     let start = Instant::now();
 
-    par_simulate(current, next_cells, &config, cell_size, use_avx2);
+    if dump_mode {
+        simulate_dump(&mut current, &mut next_cells, &config, cell_size);
+    } else {
+        par_simulate(&mut current[..], &mut next_cells[..], &config, cell_size, use_avx2);
+
+        if !fired(&current, config.firing) {
+            println!("NOT SYNCED");
+        }
+    }
 
     let end = start.elapsed();
 
     #[cfg(debug_assertions)]
-    dumpln(current, &config);
-
-    if !fired(current, config.firing) {
-        println!("NOT SYNCED");
-    }
+    dumpln(&current, &config);
 
     println!(
         "time: {}.{:03}s",
