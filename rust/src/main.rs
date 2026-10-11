@@ -380,18 +380,34 @@ fn dump_plain(cells: &[u8], config: &Config) {
     println!("{}", names.join("|"));
 }
 
+// dump 行を書き出す。color なら dumpln(ルールファイルの前/背景色を
+// 使った ANSI 出力、1〜発火ステップまでの実セルのみ)を用いる。
+fn dump_line(cells: &[u8], config: &Config, color: bool) {
+    if color {
+        dumpln(cells, config);
+        return;
+    }
+    dump_plain(cells, config);
+}
+
 // -d モード用: 逐次で 1 ステップごとに途中経過を出力する。
 // 出力は「初期配置 + 1〜発火ステップまでの各行」で ruby -d と同じ列になる。
 // (並列ではワーカー間のトークン同期の中で全体を一つのタイミングで
 //  参照できる地点がないため、ダンプモードは逐次実行にしている)
-fn simulate_dump(current: &mut Vec<u8>, next_cells: &mut Vec<u8>, config: &Config, n: usize) -> usize {
-    dump_plain(current, config);
+fn simulate_dump(
+    current: &mut Vec<u8>,
+    next_cells: &mut Vec<u8>,
+    config: &Config,
+    n: usize,
+    color: bool,
+) -> usize {
+    dump_line(current, config, color);
     let mut t = 0;
     while !fired(current, config.firing) && t <= ((n << 1) - 2) {
         nextline(current, next_cells, config);
         t += 1;
         std::mem::swap(current, next_cells);
-        dump_plain(current, config);
+        dump_line(current, config, color);
     }
     t
 }
@@ -515,15 +531,23 @@ fn par_simulate<'a>(
 fn main() {
     let args: Vec<String> = env::args().collect();
 
-    // 使い方: fssp.exe [size] [-d]
-    //   -d / --dump : 逐次実行して 1 ステップごとに途中経過を出力
-    //   (ruby の -d と同じ書式。並行実行のダンプとは干渉するため逐次にする)
+    // 使い方: fssp.exe [size] [-d] [-c]
+    //   -d / --dump  : 逐次実行して 1 ステップごとに途中経過を出力
+    //                  (ruby の -d と同じ書式。
+    //                   並行実行のダンプとは干渉するため逐次にする)
+    //   -c / --color : ダンプを dumpln と同じ ANSI 色付きに
+    //                  (-c 単独指定時は -d を兼ねる)
     let mut dump_mode = false;
+    let mut color_mode = false;
     let mut size_arg: Option<usize> = None;
 
     for a in args.iter().skip(1) {
         match a.as_str() {
             "-d" | "--dump" => dump_mode = true,
+            "-c" | "--color" => {
+                color_mode = true;
+                dump_mode = true;
+            }
             v => {
                 if size_arg.is_none() {
                     size_arg = v.parse().ok();
@@ -565,7 +589,7 @@ fn main() {
     let start = Instant::now();
 
     if dump_mode {
-        simulate_dump(&mut current, &mut next_cells, &config, cell_size);
+        simulate_dump(&mut current, &mut next_cells, &config, cell_size, color_mode);
     } else {
         par_simulate(&mut current[..], &mut next_cells[..], &config, cell_size, use_avx2);
 
