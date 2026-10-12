@@ -504,14 +504,21 @@ fn par_simulate<'a>(
         ary = split(cur, nex, 2);
     }
 
+    // 一斉射撃の最適ステップ数。正しい解は 2n-2 が下限で必ずここで全セルが
+    // 発火するので、全セグメントを同じ回数だけ回し、判定は最後に全体で 1 回行う。
+    // セグメント単位で fired() を見て早期離脱させると、先に自分の範囲が
+    // 全発火した側がトークン交換をやめてしまい、隣が recv で詰まって
+    // RecvError で panic する(同期しないルールセットで発生)。
+    // 2n-2 は常に偶数なので、swap 回数が偶数に戻り最終状態は cur 側に載る。
+    let steps = (n << 1) - 2;
+
     ary.into_par_iter().for_each(|mut ary_pair| {
-        let mut t = 0;
-        while !(fired(ary_pair.cur, config.firing) || (t > ((n << 1) - 2))) {
+        for _ in 0..steps {
             nextline_par(&mut ary_pair, config, use_avx2);
 
             for sender in &ary_pair.sender {
                 if let Some(ref s) = sender {
-                    s.send(t as i32).unwrap();
+                    s.send(0).unwrap();
                 };
             }
 
@@ -522,8 +529,6 @@ fn par_simulate<'a>(
             }
 
             (ary_pair.cur, ary_pair.nex) = (ary_pair.nex, ary_pair.cur);
-
-            t += 1;
         }
     });
 }
@@ -531,7 +536,9 @@ fn par_simulate<'a>(
 fn main() {
     let args: Vec<String> = env::args().collect();
 
-    // 使い方: fssp.exe [size] [-d] [-c]
+    // 使い方: fssp.exe -r <rulefile> [-s size] [-d] [-c]
+    //   -r / --rule  : 遷移規則ファイル(必須)
+    //   -s / --size  : セル数(既定 10)
     //   -d / --dump  : 逐次実行して 1 ステップごとに途中経過を出力
     //                  (ruby の -d と同じ書式。
     //                   並行実行のダンプとは干渉するため逐次にする)
@@ -540,27 +547,83 @@ fn main() {
     let mut dump_mode = false;
     let mut color_mode = false;
     let mut size_arg: Option<usize> = None;
+    let mut rule_arg: Option<String> = None;
 
-    for a in args.iter().skip(1) {
-        match a.as_str() {
+    // 位置引数は取らず、既定のルールファイルも持たない(必ず -r で指定する)。
+    // 解釈できない引数や値の欠落はエラーにする。以前は数値に解釈できない位置引数を
+    // 黙って捨てていたため、`fssp rulefile 5` と打つと既定の waksman で走ってしまい
+    // 別のルールセットの発火と紛らわしかった。
+    const USAGE: &str = "usage: fssp -r <rulefile> [-s size] [-d] [-c]";
+    const OPTIONS: &str = concat!(
+        "  -r, --rule <file>     遷移規則ファイル(必須)\n",
+        "  -s, --size <n>        セル数(既定 10)\n",
+        "  -d, --dump            1 ステップごとの途中経過を出力(ruby -d と同書式)\n",
+        "  -c, --color           ダンプを ANSI 色付きに(-c は -d を兼ねる)\n",
+        "  -h, --help            このメッセージ"
+    );
+
+    // -r / -s は値を取るので index で回す
+    let mut i = 1;
+    while i < args.len() {
+        let opt = args[i].as_str();
+        match opt {
+            "-h" | "--help" => {
+                // エラーではないので stdout に出して正常終了する
+                println!("{}\n{}", USAGE, OPTIONS);
+                std::process::exit(0);
+            }
             "-d" | "--dump" => dump_mode = true,
             "-c" | "--color" => {
                 color_mode = true;
                 dump_mode = true;
             }
-            v => {
-                if size_arg.is_none() {
-                    size_arg = v.parse().ok();
+            "-r" | "--rule" | "-s" | "--size" => {
+                i += 1;
+                let value = match args.get(i) {
+                    Some(v) => v,
+                    None => {
+                        eprintln!("{}: value is required", opt);
+                        eprintln!("{}", USAGE);
+                        std::process::exit(1);
+                    }
+                };
+
+                if opt == "-r" || opt == "--rule" {
+                    rule_arg = Some(value.clone());
+                } else {
+                    match value.parse::<usize>() {
+                        Ok(n) => size_arg = Some(n),
+                        Err(_) => {
+                            eprintln!("{}: invalid size: {}", opt, value);
+                            eprintln!("{}", USAGE);
+                            std::process::exit(1);
+                        }
+                    }
                 }
             }
+            v => {
+                eprintln!("unknown argument: {}", v);
+                eprintln!("{}", USAGE);
+                std::process::exit(1);
+            }
         }
+        i += 1;
     }
 
     let cell_size = size_arg.unwrap_or(10);
 
-    let s = match read_file("../waksman-slim.rul.txt".to_owned()) {
+    let rule_file = match rule_arg {
+        Some(path) => path,
+        None => {
+            eprintln!("rule file is not specified");
+            eprintln!("{}", USAGE);
+            std::process::exit(1);
+        }
+    };
+
+    let s = match read_file(rule_file.clone()) {
         Ok(s) => s,
-        Err(e) => panic!("fail to read file: {}", e),
+        Err(e) => panic!("fail to read file {}: {}", rule_file, e),
     };
 
     let mut config = parse_rule_file(&s);
