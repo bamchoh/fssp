@@ -54,7 +54,7 @@ M    ##B    ##Q    ->C
 R    ##B    ##A    ->Q    
 R    ##B    ##B    ->B    
 R    ##B    ##C    ->B    
-R    ##B    ##M    ->Q    
+R    ##B    ##M    ->A    
 R    ##B    ##Q    ->Q    
 B    ##C    ##B    ->C    
 B    ##C    ##C    ->R    
