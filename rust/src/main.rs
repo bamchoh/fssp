@@ -716,27 +716,149 @@ fn report_faults(analysis: &FaultAnalysis) -> (Vec<String>, Vec<String>) {
             fail_a3.join(", ")
         );
     }
-    println!("note: defective cells relay signals at 1/1; freeze/thaw signals are a separate control layer");
+    println!("note: defective cells relay signals at 1/1 (two one-way pipelines); intact segments sync per Umeo A1/A2");
 
     (fail_a1a2, fail_a3)
 }
 
 // ── 故障セル中継層 + 制御層 ──────────────────────────────────────────────
-// 故障セルのモデル(2026-10-13 壁打ちで確定):
-//   - 故障セルは t=n で t=n-1 の左セルと右セルの状態を保持する(= 1 ステップ遅れの
-//     純シフト)。故障セルの遷移には通常セルのルール表を使わない。
-//   - 左から来た値はそのまま右へ、右から来た値はそのまま左へ(方向保存の 1/1)。
-//     連鎖する故障セルでは対応する方向のストリーム値が渡る。
+// 故障セルのモデル:
+//   - 故障セルは遷移規則を使わず、双方向の 1/1 パイプライン(§2.3.2, Fig.5)。
+//     左から来た値はそのまま右へ、右から来た値はそのまま左へ(方向保存)。
 //   - 隣接セルの故障/正常は故障フラグ(mask)で判定する。www は配列の外側の壁のみ。
-// 制御層:
-//   - 凍結/解凍信号はセル状態とは別のチャネル(ctrl)に載る。ルールファイルは
-//     触らず、シミュレーター内部で 1/1 左向きに伝播し、到着したセルを
-//     凍結(状態変化停止)/解凍(再開)する。
+// 信号層(A1 モード = -f 指定かつ --inject/--wallset なし):
+//   - 管路は規則層で実装した凍結波/解凍波(balzer-freeze.rul.txt の F 状態)への
+//     起動信号だけを運ぶ。信号は A1/A2 の式(t_i, t_i1, Δt_i)から区間構造より
+//     事前計算し、管路の遠位口から注入して 1/1 で流れ、近位口のルール入力に
+//     ちょうど 1 ステップだけ提示される(壁の役割と同じ提示機構)。
+//   - 管路が信号を運んでいないときは www を提示する(区間の境界は、区間内の
+//     同期にとって外側の壁と同じ振る舞いをする)。
+//   - 凍結そのもの、解凍の波、区間内の同期はすべて遷移規則で動く。
+// オラクルモード(--inject/--wallset あり):
+//   - ctrl チャネルによる凍結/解凍注入と、素の状態中継(以前の実験機構)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Ctrl {
     None,
     Freeze,
     Thaw,
+}
+
+// A1/A2 のスケジュールに従い管路へ注入される信号。
+// time = 管路の流入口セルに値が現れる時刻、cell = 流入口セル(故障セル)。
+// to_left = true なら R→L 管路(to_left、右口から注入)、false なら L→R(to_right、
+// 左口から注入)。信号は管路を 1/1 で流れ、近位口で 1 ステップだけ提示されて消える。
+struct PlannedSignal {
+    time: usize,
+    cell: usize,
+    to_left: bool,
+    value: u8,
+}
+
+fn find_state_index(config: &Config, name: &str) -> Option<u8> {
+    config
+        .states
+        .iter()
+        .position(|s| s.name.trim() == name)
+        .map(|i| i as u8)
+}
+
+// Umeo §3 (A1/Theorem 2, A2/Theorem 3) の式から信号スケジュールを組み立てる。
+//  正常区間 I_i (i = 1..p+1) の将軍起動:  t_i  = 2 Σ_{j<i} (n_j + m_j)
+//  I_i の凍結起動:     t_i1 = t_i + n_i - 1 (i ≤ p、A1 本文の t1 = n1 - 1 と一致)
+//  I_i の凍結期間:     Δt_i = 2 m_i + 2 Σ_{j=i+1..p} (n_j + m_j) + 2 n_{p+1}
+//  I_i の解凍起動:     t_i2 = t_i1 + Δt_i
+// 信号は対応する故障区間 D の管路に流し込まれ、提示時刻(起動時刻の 1 ステップ前)
+// に近位口のルール入力へ現れる。
+fn plan_a1_signals(analysis: &FaultAnalysis, config: &Config) -> (Vec<PlannedSignal>, Vec<String>) {
+    let mut plan = vec![];
+    let mut notes = vec![];
+    let p = analysis.segments.iter().filter(|s| !s.intact).count();
+    let fs = find_state_index(config, "FS");
+    let ft = find_state_index(config, "FT");
+    let ng = find_state_index(config, "NG");
+
+    if fs.is_none() || ft.is_none() || ng.is_none() {
+        notes.push(
+            "rule file lacks FS/FT/NG signal states; A1 scheduling skipped (segments run undelayed)"
+                .to_string(),
+        );
+        return (vec![], notes);
+    }
+
+    let sizes: Vec<usize> = analysis
+        .segments
+        .iter()
+        .map(|s| s.end - s.start + 1)
+        .collect();
+    let n_last = sizes[sizes.len() - 1];
+
+    // I_i (1-based) = segments[2(i-1)]。t_i = 2 Σ_{j<i} (n_j + m_j)。
+    let t_i = |i: usize| -> usize {
+        2 * analysis
+            .segments
+            .iter()
+            .take(2 * (i - 1))
+            .map(|s| s.end - s.start + 1)
+            .sum::<usize>()
+    };
+
+    for i in 1..=p {
+        let d = &analysis.segments[2 * i - 1]; // D_i
+        let m_i = d.end - d.start + 1;
+        let n_i = analysis.segments[2 * i - 2].end - analysis.segments[2 * i - 2].start + 1;
+        // 凍結/解凍信号は I_i の右端の境界で生成される(論文: I1 の右端での反射
+        // 信号)。管路の左口(= I_i 右端セルの右入力)に直接注入し、提示時刻に
+        // ちょうど 1 ステップだけ見せる。FS の提示時刻は t_1i の 1 ステップ前。
+        // n_i = 1 の縮退区間は t_1i = t_i なので t_i にクランプする(将軍が
+        // (www, M, FS) -> FM で凍結する)。
+        if let (Some(fs), Some(ft)) = (fs, ft) {
+            let t_1i = t_i(i) + n_i - 1;
+            let fs_time = if t_1i >= 1 { t_1i - 1 } else { t_i(i) };
+            let delta = 2 * m_i
+                + 2 * analysis
+                    .segments
+                    .iter()
+                    .skip(2 * i + 1)
+                    .step_by(2)
+                    .map(|s| s.end - s.start + 1)
+                    .sum::<usize>()
+                // Σ_{j=i+1..p}: D_{j} = 0-based の 2j-1(2i+1, 2i+3, ...)
+                + 2 * n_last;
+            let t_2i = t_1i + delta;
+            notes.push(format!(
+                "I{} frozen Δt={} (FS at t={}, FT at t={})",
+                i,
+                delta,
+                fs_time,
+                t_2i - 1
+            ));
+            plan.push(PlannedSignal {
+                time: fs_time,
+                cell: d.start,
+                to_left: true,
+                value: fs,
+            });
+            plan.push(PlannedSignal {
+                time: t_2i - 1,
+                cell: d.start,
+                to_left: true,
+                value: ft,
+            });
+        }
+        // 次の正常区間 I_{i+1} の将軍起動信号(管路の L→R パイプラインを流れて
+        // I_{i+1} の左端セルの左入力に提示される)
+        if let Some(ng) = ng {
+            let t_next = t_i(i + 1);
+            plan.push(PlannedSignal {
+                time: t_next - 1 - (m_i - 1),
+                cell: d.start,
+                to_left: false,
+                value: ng,
+            });
+            notes.push(format!("I{} general launched at t={}", i + 1, t_next));
+        }
+    }
+    (plan, notes)
 }
 
 struct FaultField {
@@ -748,20 +870,34 @@ struct FaultField {
     to_right_nex: Vec<u8>,
     to_left_nex: Vec<u8>,
     ctrl_nex: Vec<Ctrl>,
+    // A1 モード: 管路は信号だけを運び、アイドル時は www を提示する
+    signal_only: bool,
 }
 
 impl FaultField {
-    fn new(mask: &[bool], config: &Config) -> FaultField {
+    fn intact(&self, c: usize) -> bool {
+        !self.mask[c]
+    }
+
+    fn new(mask: &[bool], config: &Config, signal_only: bool) -> FaultField {
         let n = mask.len() - 2;
+        // 信号層のアイドル値は外側の壁と同じ www (区間の境界は無信号のとき
+        // 壁と同じ提示をする)。オラクルモードでは旧来の soldier で満たす。
+        let idle = if signal_only {
+            config.external as u8
+        } else {
+            config.soldier as u8
+        };
         let mut field = FaultField {
             mask: mask.to_vec(),
-            to_right: vec![config.soldier as u8; n + 2],
-            to_left: vec![config.soldier as u8; n + 2],
+            to_right: vec![idle; n + 2],
+            to_left: vec![idle; n + 2],
             ctrl: vec![Ctrl::None; n + 2],
             frozen: vec![false; n + 2],
-            to_right_nex: vec![config.soldier as u8; n + 2],
-            to_left_nex: vec![config.soldier as u8; n + 2],
+            to_right_nex: vec![idle; n + 2],
+            to_left_nex: vec![idle; n + 2],
             ctrl_nex: vec![Ctrl::None; n + 2],
+            signal_only,
         };
         // 壁は故障ではない
         field.mask[0] = false;
@@ -801,15 +937,21 @@ impl FaultField {
         for c in 1..=n {
             if self.mask[c] {
                 // 故障セル: 左に由来する値を保ったまま右へ渡す準備をする。
-                // 左隣の「保持値」は、左隣が故障ならその L→R ストリーム、
-                // 正常ならそのセルの現在状態。
+                // 左隣の値は、左隣が故障ならその L→R ストリーム、正常ならそのセルの
+                // 現在状態。A1 モードでは管路は信号だけを運ぶ: 流入口(隣が正常の
+                // 場所)では計画された注入信号を取り込み、それ以外は www を充填する
+                // (管からセル状態の生値を取り込まない)。
                 self.to_right_nex[c] = if self.mask[c - 1] {
                     self.to_right[c - 1]
+                } else if self.signal_only {
+                    config.external as u8
                 } else {
                     current[c - 1]
                 };
                 self.to_left_nex[c] = if self.mask[c + 1] {
                     self.to_left[c + 1]
+                } else if self.signal_only {
+                    config.external as u8
                 } else {
                     current[c + 1]
                 };
@@ -848,12 +990,23 @@ impl FaultField {
     }
 
     // 凍結状態のダンプ(-f/--inject 指定時のみ)。凍結セルに * を出す。
+    // A1 モードでは、凍結変状態 F(x) を表示しているセル(ルール層で凍結)も * で
+    // 示す(FA/FB/FC/FL/FM/FQ/FR = 2 文字の F で始まる状態名)。
     // 各行の列幅は状態行と揃えて位置を対応させる。
     fn dump_frozen(&self, current: &[u8], config: &Config) {
         let mut row = String::from("F:");
         for c in 1..current.len() - 1 {
             let width = config.states[current[c] as usize].name.len();
-            let text = if self.frozen[c] { "*".to_string() } else { String::new() };
+            let rule_frozen = if self.frozen[c] {
+                true
+            } else {
+                let name = config.states[current[c] as usize].name.trim();
+                self.intact(c)
+                    && name.len() == 2
+                    && name.starts_with('F')
+                    && matches!(name.chars().nth(1), Some('A' | 'B' | 'C' | 'L' | 'M' | 'Q' | 'R'))
+            };
+            let text = if rule_frozen { "*".to_string() } else { String::new() };
             row.push('|');
             if text.chars().count() < width {
                 row.push_str(&" ".repeat(width - text.chars().count()));
@@ -904,6 +1057,8 @@ fn fired_intact(cells: &[u8], mask: &[bool], firing: usize) -> bool {
 // 故障ありの逐次シミュレーション。injections は (種類, セル, 時刻)、wallsets は
 // (状態番号, 時刻)で時刻 t に右壁の状態を置き換える(--wallset: 論文モデルの
 // 「外部からの信号」= 壁側から提示される信号状態)。
+// signals は A1/A2 スケジュール信号(plan_a1_signals の出力)。時刻 t に管路の
+// 流入口セルへ値を置き、1/1 で流れて近位口で提示される。
 // メッセージは「時刻 t にその時刻のセルに置かれる=そのステップで到着処理される」。
 // 戻り値は終了した時刻(正常セル全発火または上限)。
 fn simulate_fault(
@@ -914,15 +1069,23 @@ fn simulate_fault(
     cap: usize,
     injections: &[(Ctrl, usize, usize)],
     wallsets: &[(u8, usize)],
+    signals: &[PlannedSignal],
     dump: bool,
     color: bool,
 ) -> usize {
     let n = current.len() - 2;
-    if dump {
-        dump_line(current, config, color);
-    }
     let mut t = 0;
     loop {
+        // この時刻の信号注入(管路の流入口セルに値を置く→ 1/1 で流れて近位口に提示)
+        for sig in signals {
+            if sig.time == t {
+                if sig.to_left {
+                    ff.to_left[sig.cell] = sig.value;
+                } else {
+                    ff.to_right[sig.cell] = sig.value;
+                }
+            }
+        }
         for &(kind, cell, time) in injections {
             if time == t {
                 ff.ctrl[cell] = kind;
@@ -933,18 +1096,20 @@ fn simulate_fault(
                 current[n + 1] = state;
             }
         }
-        // 次状態を next_cells に計算してから入れ替える(2 バッファ交互)
-        ff.fault_step(&mut current[..], &mut next_cells[..], config);
-        std::mem::swap(current, next_cells);
-        t += 1;
         if dump {
+            // 時刻 t の状態(その時刻に提示される信号を含む管路内容)を出す
             dump_line(current, config, color);
             if !color {
                 if ff.mask.iter().any(|&m| m) {
                     ff.dump_streams(current, config, "R:");
                     ff.dump_streams(current, config, "L:");
                 }
-                if ff.frozen.iter().any(|&f| f) {
+                if ff.frozen.iter().any(|&f| f) || (1..=(current.len() - 2)).any(|c| ff.intact(c) && {
+                    let name = config.states[current[c] as usize].name.trim();
+                    name.len() == 2
+                        && name.starts_with('F')
+                        && matches!(name.chars().nth(1), Some('A' | 'B' | 'C' | 'L' | 'M' | 'Q' | 'R'))
+                }) {
                     ff.dump_frozen(current, config);
                 }
             }
@@ -952,6 +1117,10 @@ fn simulate_fault(
         if fired_intact(current, &ff.mask, config.firing) || t >= cap {
             break;
         }
+        // 次状態を next_cells に計算してから入れ替える(2 バッファ交互)
+        ff.fault_step(&mut current[..], &mut next_cells[..], config);
+        std::mem::swap(current, next_cells);
+        t += 1;
     }
     t
 }
@@ -1225,7 +1394,22 @@ fn main() {
         // 故障あり/制御注入は逐次実行する(制御層・中継は HALO をまたぐ隣接参照を
         // 含み、並列パスのトークン同期設計とは別の調整が必要)。
         let injections = validate_injections(&injections, cell_size);
-        let mut ff = FaultField::new(&mask, &config);
+        // A1 モード: -f 指定で --inject/--wallset なし。管路は信号だけを運び、
+        // Umeo A1/A2 の式から区間構造より算出した時刻で凍結/解凍/将軍起動を提示する。
+        let signal_only = fault_arg.is_some() && injections.is_empty() && wallsets.is_empty();
+        let mut ff = FaultField::new(&mask, &config, signal_only);
+
+        // A1/A2 の信号スケジュールを区間構造から組み立てる
+        let signals: Vec<PlannedSignal> = match &analysis {
+            Some(a) if signal_only => {
+                let (plan, notes) = plan_a1_signals(a, &config);
+                for note in &notes {
+                    println!("a1: {}", note);
+                }
+                plan
+            }
+            _ => vec![],
+        };
 
         // --wallset の状態名をルールファイルの状態番号に解決する
         let wallsets: Vec<(u8, usize)> = wallsets
@@ -1262,6 +1446,7 @@ fn main() {
             cap,
             &injections,
             &wallsets,
+            &signals,
             dump_mode,
             color_mode,
         );
@@ -1391,7 +1576,7 @@ mod tests {
         let n = 10;
         let mut cur = new_line(n, &cfg);
         let mut nex = new_line(n, &cfg);
-        let mut ff = FaultField::new(&fault_mask(n, 5, 6), &cfg);
+        let mut ff = FaultField::new(&fault_mask(n, 5, 6), &cfg, false);
         cur[4] = 2; // セル 4 に S
 
         run_steps(&mut cur, &mut nex, &mut ff, &cfg, 2);
@@ -1414,7 +1599,7 @@ mod tests {
         let n = 10;
         let mut cur = new_line(n, &cfg);
         let mut nex = new_line(n, &cfg);
-        let mut ff = FaultField::new(&fault_mask(n, 5, 6), &cfg);
+        let mut ff = FaultField::new(&fault_mask(n, 5, 6), &cfg, false);
         cur[8] = 2; // セル 8 に S
 
         run_steps(&mut cur, &mut nex, &mut ff, &cfg, 3);
@@ -1432,7 +1617,7 @@ mod tests {
         let n = 10;
         let mut cur = new_line(n, &cfg);
         let mut nex = new_line(n, &cfg);
-        let mut ff = FaultField::new(&fault_mask(n, 5, 6), &cfg);
+        let mut ff = FaultField::new(&fault_mask(n, 5, 6), &cfg, false);
         cur[4] = 2;
         cur[8] = 2;
 
@@ -1452,7 +1637,7 @@ mod tests {
         let n = 10;
         let mut cur = new_line(n, &cfg);
         let mut nex = new_line(n, &cfg);
-        let mut ff = FaultField::new(&fault_mask(n, 5, 6), &cfg);
+        let mut ff = FaultField::new(&fault_mask(n, 5, 6), &cfg, false);
 
         run_steps(&mut cur, &mut nex, &mut ff, &cfg, 5);
         for c in 1..=n {
@@ -1471,7 +1656,7 @@ mod tests {
         let n = 8;
         let mut cur = new_line(n, &cfg);
         let mut nex = new_line(n, &cfg);
-        let mut ff = FaultField::new(&fault_mask(n, 0, 0), &cfg); // 故障なし
+        let mut ff = FaultField::new(&fault_mask(n, 0, 0), &cfg, false); // 故障なし
         ff.ctrl[4] = Ctrl::Freeze; // t=0 にセル 4 に凍結メッセージ
 
         run_steps(&mut cur, &mut nex, &mut ff, &cfg, 1);
@@ -1496,7 +1681,7 @@ mod tests {
         let n = 8;
         let mut cur = new_line(n, &cfg);
         let mut nex = new_line(n, &cfg);
-        let mut ff = FaultField::new(&fault_mask(n, 0, 0), &cfg);
+        let mut ff = FaultField::new(&fault_mask(n, 0, 0), &cfg, false);
         ff.ctrl[4] = Ctrl::Freeze; // t=0: セル 4 を凍結
         cur[3] = 2; // t=0: セル 3 に S(右へ進もうとする)
 
@@ -1515,7 +1700,7 @@ mod tests {
         let n = 10;
         let mut cur = new_line(n, &cfg);
         let mut nex = new_line(n, &cfg);
-        let mut ff = FaultField::new(&fault_mask(n, 5, 6), &cfg);
+        let mut ff = FaultField::new(&fault_mask(n, 5, 6), &cfg, false);
         ff.ctrl[7] = Ctrl::Freeze; // t=0: セル 7(区間の右隣)に注入
 
         run_steps(&mut cur, &mut nex, &mut ff, &cfg, 1);
@@ -1534,7 +1719,7 @@ mod tests {
         let n = 8;
         let mut cur = new_line(n, &cfg);
         let mut nex = new_line(n, &cfg);
-        let mut ff = FaultField::new(&fault_mask(n, 0, 0), &cfg);
+        let mut ff = FaultField::new(&fault_mask(n, 0, 0), &cfg, false);
         ff.ctrl[4] = Ctrl::Freeze; // t=0: セル4を凍結
 
         run_steps(&mut cur, &mut nex, &mut ff, &cfg, 3);

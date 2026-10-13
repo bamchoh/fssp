@@ -159,6 +159,37 @@ def gen():
     print(f'balzer-freeze.rul.txt: states={len(full_states)} rules={len(ordered)}')
 
 
+def add_a1():
+    # A1 接続用の付加: 将軍起動信号 NG とその受容規則 + 管路アイドル提示 www の
+    # 兵士規則。既存の発見規則を保持したまま追記する(regen/discard はしない)。
+    states, rules, pre, post = load(OUT_RULE)
+    rulemap = parse_rules(rules)
+    names = [state_name(s) for s in states]
+    if 'NG' not in names:
+        states.append(f'{pad("NG")}@101010,808080,others')
+        names.append('NG')
+    additions = [
+        (('www', 'L', 'L'), 'L'),   # 区間左端のアイドル(balzer の www 規則にはない)
+        (('www', 'L', 'www'), 'L'), # 1 セル区間(右端)のアイドル
+        (('NG', 'L', 'L'), 'M'),    # 管路の将軍起動信号提示でセルを M へ
+        # 起動区間が右端(長さ1)の場合は起動=発火((NG, L, www) のみが目印)
+        (('NG', 'L', 'www'), 'F'),
+        # n1=1 の縮退区間: FS クランプ時の将軍が FM で凍結し、FT 到着=発火
+        # (2n1-2 = 0 なので解凍そのものが射撃。非縮退では FT はセル1の入力に現れない)
+        (('www', 'FM', 'FT'), 'F'),
+    ]
+    n_added = 0
+    for key, target in additions:
+        if rulemap.get(key) != target:
+            if key in rulemap:
+                print(f'  override {key}: {rulemap[key]} -> {target}')
+            rulemap[key] = target
+            n_added += 1
+    ordered = emit(rulemap, list(rulemap.keys()))
+    write_file(states, pre, post, ordered)
+    print(f'add_a1: states={len(states)} rules={len(ordered)} (+{n_added})')
+
+
 def run(binary, args):
     p = subprocess.run([binary] + args, capture_output=True, text=True, cwd=HERE)
     return p.stdout
@@ -166,9 +197,26 @@ def run(binary, args):
 
 def state_rows(text):
     skip = ('R:', 'L:', 'F:', 'cells:', 'segments:', 'constraint', 'note:',
-            'time:', 'SYNCED', 'NOT')
+            'a1:', 'time:', 'SYNCED', 'NOT')
     return [l.rstrip() for l in text.splitlines()
             if l.strip() and not l.startswith(skip)]
+
+
+def stream_rows(text):
+    # (R行, L行) の時系列。故障セルだけ [名前] を持つ。
+    r, l = [], []
+    for line in text.splitlines():
+        s = line.rstrip()
+        if s.startswith('R:'):
+            r.append(s)
+        elif s.startswith('L:'):
+            l.append(s)
+    return r, l
+
+
+def srow_cells(row):
+    # |区切りの列。故障セルだけ [name]、正常セルは空白。
+    return [c.strip() for c in row.split('|')[1:-1]]
 
 
 def cells(row):
@@ -313,6 +361,159 @@ def verify():
     print('ALL OK' if ok else 'FAILURES PRESENT')
 
 
+# ── A1 接続(p=1)の検証 ────────────────────────────────────────────────
+# ケースは (n1, m1, n2)。期待配置:
+#   - I1 (セル 1..n1): t1 = n1-1 から Δt = 2m1+2n2 行の凍結
+#     (cell x: f = t1+(n1-x)。t<f なら gold1[t]、f<=t<f+Δ なら F(gold1[f-1])、
+#      f+Δ <= なら gold1[t-Δ])
+#   - D1 (セル n1+1..n1+m1): 静止表示 'L'
+#   - I2 (セル n1+m1+1..): t >= 2(n1+m1) で gold2[t - 2(n1+m1)]、それ以前 'L'
+A1_CASES = [
+    (13, 1, 6),   # n=20 -f 14 (実際の症例)
+    (5, 1, 5),
+    (5, 2, 4),
+    (6, 3, 4),
+    (5, 1, 9),    # n2 > n1+m1
+    (8, 4, 5),
+    (10, 5, 10),
+    (2, 1, 2),
+    (3, 3, 4),
+]
+
+
+def a1_expected(gold1_c, gold2_c, n1, m1, n2):
+    n = n1 + m1 + n2
+    t1 = n1 - 1
+    dt = 2 * m1 + 2 * n2
+    T2 = 2 * (n1 + m1)
+    rows = []
+    for t in range(0, 2 * n - 2 + 1):
+        row = []
+        for x in range(1, n + 1):
+            if x <= n1:
+                f_ = t1 + (n1 - x)
+                if t < f_:
+                    row.append(gold1_c[t][x - 1])
+                elif t < f_ + dt:
+                    row.append('F' + gold1_c[f_ - 1][x - 1])
+                else:
+                    row.append(gold1_c[t - dt][x - 1])
+            elif x <= n1 + m1:
+                row.append('L')
+            else:
+                x2 = x - (n1 + m1)
+                row.append(gold2_c[t - T2][x2 - 1] if t >= T2 else 'L')
+        rows.append(row)
+    return rows
+
+
+def run_a1(n1, m1, n2):
+    n = n1 + m1 + n2
+    spec = f'{n1 + 1}' if m1 == 1 else f'{n1 + 1}-{n1 + m1}'
+    text = run(BIN, ['-r', OUT_RULE, '-s', str(n), '-d', '-f', spec])
+    return state_rows(text), text
+
+
+def verify_a1():
+    ok = True
+    for (n1, m1, n2) in A1_CASES:
+        n = n1 + m1 + n2
+        gold1_c = [cells(row) for row in golden_rows(n1)]
+        gold2_c = [cells(row) for row in golden_rows(n2)]
+        exp = a1_expected(gold1_c, gold2_c, n1, m1, n2)
+        act, _ = run_a1(n1, m1, n2)
+        bad = 0
+        first = None
+        for t, row in enumerate(act):
+            if t >= len(exp):
+                bad += 1
+                continue
+            ac, ec = cells(row), exp[t]
+            for k, (a, e) in enumerate(zip(ac, ec)):
+                if a.strip() != e.strip():
+                    bad += 1
+                    if first is None:
+                        first = (t, k + 1, a.strip(), e.strip())
+        want = 2 * n - 2 + 1
+        fire_ok = len(act) == want
+        status = 'OK' if (bad == 0 and fire_ok) else 'NG'
+        if status == 'NG':
+            ok = False
+        print(f'a1 n1={n1} m1={m1} n2={n2}: {status} (mismatched={bad}, '
+              f'fire={len(act) - 1} want={want - 1})'
+              + (f' first t={first[0]} cell{first[1]} act={first[2]} exp={first[3]}'
+                 if first is not None else ''))
+    print('ALL OK' if ok else 'FAILURES PRESENT')
+
+
+def discover_a1():
+    states, rules, pre, post = load(OUT_RULE)
+    rulemap = parse_rules(rules)
+    discovered = {}
+    added_total = 0
+    A1_CASES_LOCAL = list(A1_CASES)
+    for it in range(120):
+        additions = {}
+        for (n1, m1, n2) in A1_CASES_LOCAL:
+            n = n1 + m1 + n2
+            gold1_c = [cells(row) for row in golden_rows(n1)]
+            gold2_c = [cells(row) for row in golden_rows(n2)]
+            exp = a1_expected(gold1_c, gold2_c, n1, m1, n2)
+            act, text = run_a1(n1, m1, n2)
+            rr, ll = stream_rows(text)
+            rrows = [srow_cells(r) for r in rr]
+            lrows = [srow_cells(l) for l in ll]
+            for t, row in enumerate(act):
+                if t >= len(exp):
+                    continue
+                ac, ec = cells(row), exp[t]
+                mism = [(k, e.strip()) for k, (a, e) in enumerate(zip(ac, ec))
+                        if a.strip() != e.strip()]
+                if not mism or t == 0:
+                    continue
+                # 不一致行の直前のアクティブ行+管路提示から規則キーを組み立てる
+                prev = cells(act[t - 1])
+                rrow = rrows[t - 1] if t - 1 < len(rrows) else None
+                lrow = lrows[t - 1] if t - 1 < len(lrows) else None
+                for (k, e) in mism:
+                    ck = k + 1  # 1 始まりセル番号
+                    if ck == 1:
+                        l = 'www'
+                    elif rrow is not None and rrow[ck - 2].startswith('['):
+                        l = rrow[ck - 2][1:-1]
+                    else:
+                        l = prev[k - 1].strip()
+                    if ck == n:
+                        r = 'www'
+                    elif lrow is not None and lrow[k + 1].startswith('['):
+                        r = lrow[k + 1][1:-1]
+                    else:
+                        r = prev[k + 1].strip()
+                    key = (l, prev[k].strip(), r)
+                    additions.setdefault(key, e)
+                break  # 最初の不一致行のみ
+        if not additions:
+            print(f'A1 closure at iteration {it} (+{added_total} rules)')
+            break
+        flip = False
+        for key, v in additions.items():
+            if discovered.get(key) not in (None, v):
+                print(f'FLIP-FLOP: {key} -> {v} (was {discovered[key]})')
+                flip = True
+                continue
+            if key not in discovered:
+                added_total += 1
+                print(f'  + ({key[0]}, {key[1]}, {key[2]}) -> {v}')
+            discovered[key] = v
+            rulemap[key] = v
+        write_file(states, pre, post, emit(rulemap, list(rulemap.keys())))
+        print(f'A1 iteration {it}: +{len(additions)} proposed (total {added_total})')
+        if flip:
+            break
+    write_file(states, pre, post, emit(rulemap, list(rulemap.keys())))
+
+
 if __name__ == '__main__':
     cmd = sys.argv[1] if len(sys.argv) > 1 else 'verify'
-    {'gen': gen, 'discover': discover, 'verify': verify}[cmd]()
+    {'gen': gen, 'discover': discover, 'verify': verify, 'add_a1': add_a1,
+     'verify_a1': verify_a1, 'discover_a1': discover_a1}[cmd]()
