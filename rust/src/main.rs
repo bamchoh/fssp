@@ -25,7 +25,9 @@ struct Config {
     soldier: usize,
     firing: usize,
     external: usize,
-    rules: [u8; 8192],
+    // 5 ビット/次元のインデックス (l<<10)+(c<<5)+r。状態数最大 32(凍結層で
+    // 18 状態になるため 16 状態上限の旧 4 ビット表現から拡張)。
+    rules: [u8; 32768],
 }
 
 fn dump_full(cells: &[u8], config: &Config) {
@@ -97,14 +99,14 @@ fn calc_next(next_cells: &mut [u8], idx: usize, current: &[u8], config: &Config)
 }
 
 fn nextcell(left: u8, center: u8, right: u8, config: &Config) -> u8 {
-    config.rules[((left as usize) << 8) + ((center as usize) << 4) + (right as usize)]
+    config.rules[((left as usize) << 10) + ((center as usize) << 5) + (right as usize)]
 }
 
 fn nextline(cur: &mut [u8], nex: &mut [u8], config: &Config) {
     calc_next(nex, 1, cur, config);
 }
 
-// AVX2 gather パス。u8 表(8192)をバイトオフセットで参照し、
+// AVX2 gather パス。u8 表(32768)をバイトオフセットで参照し、
 // gathered dword の下位 1 バイトを状態として回収する。
 #[cfg(target_arch = "x86_64")]
 mod simd {
@@ -142,13 +144,13 @@ mod simd {
             let rlo = _mm256_unpacklo_epi8(r, zp);
             let rhi = _mm256_unpackhi_epi8(r, zp);
 
-            // idx16 = (l<<8) + (c<<4) + r
+            // idx16 = (l<<10) + (c<<5) + r
             let ilo = _mm256_add_epi16(
-                _mm256_add_epi16(_mm256_slli_epi16(llo, 8), _mm256_slli_epi16(clo, 4)),
+                _mm256_add_epi16(_mm256_slli_epi16(llo, 10), _mm256_slli_epi16(clo, 5)),
                 rlo,
             );
             let ihi = _mm256_add_epi16(
-                _mm256_add_epi16(_mm256_slli_epi16(lhi, 8), _mm256_slli_epi16(chi, 4)),
+                _mm256_add_epi16(_mm256_slli_epi16(lhi, 10), _mm256_slli_epi16(chi, 5)),
                 rhi,
             );
 
@@ -209,8 +211,8 @@ mod simd {
         }
         // 端数はスカラーで
         while i < last {
-            nex[i] = rules[((cur[i - 1] as usize) << 8)
-                + ((cur[i] as usize) << 4)
+            nex[i] = rules[((cur[i - 1] as usize) << 10)
+                + ((cur[i] as usize) << 5)
                 + (cur[i + 1] as usize)];
             i += 1;
         }
@@ -282,7 +284,7 @@ fn parse_rules(line: &str, n: i32, states: &Vec<State>) -> (ParseState, usize, u
     for rule_state in vv {
         for (i, state) in states.iter().enumerate() {
             if rule_state == state.name.as_str() {
-                idx = (idx << 4) + i;
+                idx = (idx << 5) + i;
                 break;
             }
         }
@@ -307,7 +309,7 @@ fn parse_rule_file(s: &String) -> Config {
     let mut parse_state = ParseState::Begin;
     let mut config = Config {
         states: vec![],
-        rules: [0; 8192],
+        rules: [0; 32768],
         general: 0,
         soldier: 0,
         firing: 0,
@@ -772,6 +774,11 @@ impl FaultField {
     fn fault_step(&mut self, current: &mut [u8], next_cells: &mut [u8], config: &Config) {
         let n = self.mask.len() - 2;
 
+        // 壁の状態を次バッファへ保持する(--wallset で壁に外部信号を置くため。
+        // 壁は逐次の計算対象外なので、このコピーがないと swap で www に戻る)
+        next_cells[0] = current[0];
+        next_cells[n + 1] = current[n + 1];
+
         // 1) 制御メッセージの到着処理。凍結/解凍は到着した時点で反映される
         //    (凍結されたセルはこのステップの状態変化が止まる)。
         for c in 1..=n {
@@ -825,7 +832,7 @@ impl FaultField {
                 next_cells[c] = if self.frozen[c] {
                     current[c] // 凍結: 状態変化を止めて保持
                 } else {
-                    config.rules[((left as usize) << 8) + ((current[c] as usize) << 4) + (right as usize)]
+                    config.rules[((left as usize) << 10) + ((current[c] as usize) << 5) + (right as usize)]
                 };
             }
         }
@@ -840,8 +847,25 @@ impl FaultField {
         std::mem::swap(&mut self.ctrl, &mut self.ctrl_nex);
     }
 
-    // ストリーム内容のダンプ(-f 指定時のみ。各行の列幅は状態行と揃えて位置を
-    // 対応させる)。正常セルは空白。
+    // 凍結状態のダンプ(-f/--inject 指定時のみ)。凍結セルに * を出す。
+    // 各行の列幅は状態行と揃えて位置を対応させる。
+    fn dump_frozen(&self, current: &[u8], config: &Config) {
+        let mut row = String::from("F:");
+        for c in 1..current.len() - 1 {
+            let width = config.states[current[c] as usize].name.len();
+            let text = if self.frozen[c] { "*".to_string() } else { String::new() };
+            row.push('|');
+            if text.chars().count() < width {
+                row.push_str(&" ".repeat(width - text.chars().count()));
+            }
+            row.push_str(&text);
+        }
+        row.push('|');
+        println!("{}", row);
+    }
+
+    // ストリーム内容のダンプ(故障区間のあるときのみ呼ぶ。各行の列幅は状態行と
+    // 揃えて位置を対応させる)。正常セルは空白。
     fn dump_streams(&self, current: &[u8], config: &Config, prefix: &str) {
         let mut row = String::from(prefix);
         for c in 1..current.len() - 1 {
@@ -877,7 +901,9 @@ fn fired_intact(cells: &[u8], mask: &[bool], firing: usize) -> bool {
     true
 }
 
-// 故障ありの逐次シミュレーション。injections は (種類, セル, 時刻)。
+// 故障ありの逐次シミュレーション。injections は (種類, セル, 時刻)、wallsets は
+// (状態番号, 時刻)で時刻 t に右壁の状態を置き換える(--wallset: 論文モデルの
+// 「外部からの信号」= 壁側から提示される信号状態)。
 // メッセージは「時刻 t にその時刻のセルに置かれる=そのステップで到着処理される」。
 // 戻り値は終了した時刻(正常セル全発火または上限)。
 fn simulate_fault(
@@ -887,9 +913,11 @@ fn simulate_fault(
     config: &Config,
     cap: usize,
     injections: &[(Ctrl, usize, usize)],
+    wallsets: &[(u8, usize)],
     dump: bool,
     color: bool,
 ) -> usize {
+    let n = current.len() - 2;
     if dump {
         dump_line(current, config, color);
     }
@@ -900,6 +928,11 @@ fn simulate_fault(
                 ff.ctrl[cell] = kind;
             }
         }
+        for &(state, time) in wallsets {
+            if time == t {
+                current[n + 1] = state;
+            }
+        }
         // 次状態を next_cells に計算してから入れ替える(2 バッファ交互)
         ff.fault_step(&mut current[..], &mut next_cells[..], config);
         std::mem::swap(current, next_cells);
@@ -907,8 +940,13 @@ fn simulate_fault(
         if dump {
             dump_line(current, config, color);
             if !color {
-                ff.dump_streams(current, config, "R:");
-                ff.dump_streams(current, config, "L:");
+                if ff.mask.iter().any(|&m| m) {
+                    ff.dump_streams(current, config, "R:");
+                    ff.dump_streams(current, config, "L:");
+                }
+                if ff.frozen.iter().any(|&f| f) {
+                    ff.dump_frozen(current, config);
+                }
             }
         }
         if fired_intact(current, &ff.mask, config.firing) || t >= cap {
@@ -935,7 +973,7 @@ fn validate_injections(injections: &[(Ctrl, usize, usize)], n: usize) -> Vec<(Ct
     injections.to_vec()
 }
 
-const USAGE: &str = "usage: fssp -r <rulefile> [-s size] [-f faults] [--inject ...] [-t steps] [--strict] [-d] [-c]";
+const USAGE: &str = "usage: fssp -r <rulefile> [-s size] [-f faults] [--inject ...] [--wallset ...] [-t steps] [--strict] [-d] [-c]";
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -948,11 +986,12 @@ fn main() {
     //   --strict      : 故障配置が n_i >= m_i (Umeo A1/A2 の条件) を満たさない
     //                   場合に実行せず終了する(無指定時は警告して続行)
     //   --inject ...  : 制御メッセージの注入(デバッグ用)。freeze|thaw@セル@時刻。
-    //                   複数可。故障指定時のみ効果がある
+    //                   複数可。--fault なしでも Lemma 1 検証用に使える
     //   -t / --steps  : 故障あり実行のステップ上限(既定 2n-2+最大注入時刻)
     //   -d / --dump   : 逐次実行して 1 ステップごとに途中経過を出力
     //                  (ruby の -d と同じ書式。
-    //                   並行実行のダンプとは干渉するため逐次にする)
+    //                   並行実行のダンプとは干渉するため逐次にする。
+    //                   -f/--inject 時は R:/L: ストリーム行と F: 凍結行を追加)
     //   -c / --color  : ダンプを dumpln と同じ ANSI 色付きに
     //                  (-c 単独指定時は -d を兼ねる)
     let mut dump_mode = false;
@@ -963,6 +1002,7 @@ fn main() {
     let mut fault_arg: Option<String> = None;
     let mut steps_arg: Option<usize> = None;
     let mut injections: Vec<(Ctrl, usize, usize)> = vec![];
+    let mut wallsets: Vec<(String, usize)> = vec![];
 
     // 位置引数は取らず、既定のルールファイルも持たない(必ず -r で指定する)。
     // 解釈できない引数や値の欠落はエラーにする。以前は数値に解釈できない位置引数を
@@ -978,9 +1018,12 @@ fn main() {
         "  -f, --fault <list>    故障区間リスト(1 始まり、カンマ区切り、例: 3-5,10)\n",
         "  --inject <kind@c@t>   制御メッセージ注入(デバッグ用、複数可)\n",
         "                        kind: freeze|thaw、c: セル番号、t: 注入時刻\n",
+        "  --wallset <state@t>   時刻 t に右壁の提示状態を state に変える\n",
+        "                        (論文モデルの「外部からの信号」。複数可)\n",
         "  -t, --steps <k>       故障あり実行のステップ上限(既定 2n-2+最大注入時刻)\n",
         "  --strict              n_i>=m_i (A1/A2 条件) を満たす配置以外は実行しない\n",
         "  -d, --dump            1 ステップごとの途中経過を出力(ruby -d と同書式)\n",
+        "                        (-f/--inject 時は R:/L:/F: 凍結行も追加)\n",
         "  -c, --color           ダンプを ANSI 色付きに(-c は -d を兼ねる)\n",
         "  -h, --help            このメッセージ"
     );
@@ -1001,7 +1044,7 @@ fn main() {
                 dump_mode = true;
             }
             "--strict" => strict_mode = true,
-            "-r" | "--rule" | "-s" | "--size" | "-f" | "--fault" | "--inject" | "-t" | "--steps" => {
+            "-r" | "--rule" | "-s" | "--size" | "-f" | "--fault" | "--inject" | "--wallset" | "-t" | "--steps" => {
                 i += 1;
                 let value = match args.get(i) {
                     Some(v) => v,
@@ -1025,6 +1068,26 @@ fn main() {
                     }
                 } else if opt == "-f" || opt == "--fault" {
                     fault_arg = Some(value.clone());
+                } else if opt == "--wallset" {
+                    // --wallset STATE@t: 時刻 t に右壁の提示状態を STATE に変える
+                    let parts: Vec<&str> = value.split('@').collect();
+                    let (name, tt) = match (parts.as_slice(), parts.len()) {
+                        ([n_, t], 2) => (n_, t),
+                        _ => {
+                            eprintln!("{}: invalid wallset (expect state@time): {}", opt, value);
+                            eprintln!("{}", USAGE);
+                            std::process::exit(1);
+                        }
+                    };
+                    let tt = match tt.parse::<usize>() {
+                        Ok(v) => v,
+                        Err(_) => {
+                            eprintln!("{}: invalid time: {}", opt, tt);
+                            eprintln!("{}", USAGE);
+                            std::process::exit(1);
+                        }
+                    };
+                    wallsets.push((name.to_string(), tt));
                 } else if opt == "-t" || opt == "--steps" {
                     match value.parse::<usize>() {
                         Ok(k) if k > 0 => steps_arg = Some(k),
@@ -1110,51 +1173,82 @@ fn main() {
         }
     }
 
-    // 故障区間の指定があれば解析してサマリーを出す。
-    // この段階では故障セルの挙動(1/1 パイプライン中継)は未実装のため、
-    // シミュレーション自体は通常ルールのまま走る。
-    if fault_arg.is_some() {
-        let fault = match parse_fault_spec(fault_arg.as_ref().unwrap(), cell_size) {
-            Ok(f) => f,
-            Err(e) => {
-                eprintln!("--fault: {}", e);
-                eprintln!("{}", USAGE);
-                std::process::exit(1);
+    // 故障も制御メッセージ注入も壁信号もなければ通常シミュレーションへ。
+    // --wallset 単独(壁から凍結/解凍信号を提示)は Lemma 1 の遅延同期の検証用。
+    if fault_arg.is_some() || !injections.is_empty() || !wallsets.is_empty() {
+        let analysis = match fault_arg.as_ref() {
+            None => None,
+            Some(spec) => {
+                let fault = match parse_fault_spec(spec, cell_size) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        eprintln!("--fault: {}", e);
+                        eprintln!("{}", USAGE);
+                        std::process::exit(1);
+                    }
+                };
+
+                let def_str: Vec<String> = fault
+                    .segments
+                    .iter()
+                    .map(|&(a, b)| {
+                        if a == b {
+                            format!("{}", a)
+                        } else {
+                            format!("{}-{}", a, b)
+                        }
+                    })
+                    .collect();
+                println!("cells: {}, defective: {}", cell_size, def_str.join(","));
+
+                let analysis = analyze_faults(&fault, cell_size);
+                let (fail_a1a2, _) = report_faults(&analysis);
+
+                if !fail_a1a2.is_empty() {
+                    eprintln!(
+                        "warning: fault layout violates n_i>=m_i; sync guarantee of Umeo A1/A2 does not apply"
+                    );
+                    if strict_mode {
+                        eprintln!("--strict: refusing to run");
+                        std::process::exit(1);
+                    }
+                }
+                Some(analysis)
             }
         };
 
-        let def_str: Vec<String> = fault
-            .segments
-            .iter()
-            .map(|&(a, b)| {
-                if a == b {
-                    format!("{}", a)
-                } else {
-                    format!("{}-{}", a, b)
+        let mask = match &analysis {
+            Some(a) => a.mask.clone(),
+            None => vec![false; cell_size + 2],
+        };
+
+        // 故障あり/制御注入は逐次実行する(制御層・中継は HALO をまたぐ隣接参照を
+        // 含み、並列パスのトークン同期設計とは別の調整が必要)。
+        let injections = validate_injections(&injections, cell_size);
+        let mut ff = FaultField::new(&mask, &config);
+
+        // --wallset の状態名をルールファイルの状態番号に解決する
+        let wallsets: Vec<(u8, usize)> = wallsets
+            .into_iter()
+            .map(|(name, t)| {
+                match config.states.iter().position(|s| s.name.trim() == name) {
+                    Some(idx) => (idx as u8, t),
+                    None => {
+                        eprintln!("--wallset: unknown state: {}", name);
+                        eprintln!("{}", USAGE);
+                        std::process::exit(1);
+                    }
                 }
             })
             .collect();
-        println!("cells: {}, defective: {}", cell_size, def_str.join(","));
 
-        let analysis = analyze_faults(&fault, cell_size);
-        let (fail_a1a2, _) = report_faults(&analysis);
-
-        if !fail_a1a2.is_empty() {
-            eprintln!(
-                "warning: fault layout violates n_i>=m_i; sync guarantee of Umeo A1/A2 does not apply"
-            );
-            if strict_mode {
-                eprintln!("--strict: refusing to run");
-                std::process::exit(1);
-            }
-        }
-
-        // 故障ありは逐次実行する(制御層・中継は HALO をまたぐ隣接参照を含み、
-        // 並列パスのトークン同期設計とは別の調整が必要)。
-        let injections = validate_injections(&injections, cell_size);
-        let mut ff = FaultField::new(&analysis.mask, &config);
         let base_cap = (cell_size << 1) - 2;
-        let max_t = injections.iter().map(|&(_, _, t)| t).max().unwrap_or(0);
+        let max_t = injections
+            .iter()
+            .map(|&(_, _, t)| t)
+            .chain(wallsets.iter().map(|&(_, t)| t))
+            .max()
+            .unwrap_or(0);
         let cap = steps_arg.unwrap_or(base_cap + max_t);
 
         let start = Instant::now();
@@ -1167,11 +1261,12 @@ fn main() {
             &config,
             cap,
             &injections,
+            &wallsets,
             dump_mode,
             color_mode,
         );
 
-        if fired_intact(&current, &ff.mask, config.firing) {
+        if fired_intact(&current, &mask, config.firing) {
             println!("SYNCED (intact cells) at t={}", t);
         } else {
             println!("NOT SYNCED (stopped at t={})", t);
@@ -1247,14 +1342,14 @@ mod tests {
             st("S", ""),
             st("G", "general"),
         ];
-        let mut rules = [0u8; 8192];
+        let mut rules = [0u8; 32768];
         for l in 0u8..4 {
             for r in 0u8..4 {
                 // 中心 Q: 隣に S がいれば S になる(両方向 1/1 進行)、いなければ Q
-                rules[((l as usize) << 8) + (1 << 4) + (r as usize)] =
+                rules[((l as usize) << 10) + (1 << 5) + (r as usize)] =
                     if l == 2 || r == 2 { 2 } else { 1 };
                 // 中心 S: 発信して Q に戻る
-                rules[((l as usize) << 8) + (2 << 4) + (r as usize)] = 1;
+                rules[((l as usize) << 10) + (2 << 5) + (r as usize)] = 1;
             }
         }
         Config {
@@ -1453,5 +1548,54 @@ mod tests {
         cur[2] = 2;
         run_steps(&mut cur, &mut nex, &mut ff, &cfg, 2);
         assert_eq!(cur[4], 2, "t=8: 解凍されたセル 4 が信号を通過させた");
+    }
+}
+#[cfg(test)]
+mod probe_tests {
+    use super::*;
+
+    #[test]
+    fn waksman_rule_index_check() {
+        let s = read_file("../waksman-slim.rul.txt".to_string()).unwrap();
+        let mut config = parse_rule_file(&s);
+        for (i, state) in config.states.iter().enumerate() {
+            match state.class.as_str() {
+                "general" => config.general = i,
+                "soldier" => config.soldier = i,
+                "external" => config.external = i,
+                "firing" => config.firing = i,
+                _ => {}
+            }
+        }
+        assert_eq!(config.general, 5, "P0 index");
+        assert_eq!(config.external, 15, "www index");
+        let got = nextcell(config.external as u8, config.general as u8, config.soldier as u8, &config);
+        assert_eq!(got as usize, config.general, "rule (www,P0,Q) must yield P0");
+    }
+
+    #[test]
+    fn waksman_full_firing_seq() {
+        use std::time::Instant;
+        let s = read_file("../waksman-slim.rul.txt".to_string()).unwrap();
+        let mut config = parse_rule_file(&s);
+        for (i, state) in config.states.iter().enumerate() {
+            match state.class.as_str() {
+                "general" => config.general = i,
+                "soldier" => config.soldier = i,
+                "external" => config.external = i,
+                "firing" => config.firing = i,
+                _ => {}
+            }
+        }
+        let _ = Instant::now();
+        let mut cur = first_line(5, &config);
+        let mut nex = new_line(5, &config);
+        let mut t = 0;
+        while !fired(&cur, config.firing) && t <= 2 * 5 - 2 {
+            nextline(&mut cur, &mut nex, &config);
+            std::mem::swap(&mut cur, &mut nex);
+            t += 1;
+        }
+        assert_eq!(t, 8, "fires at 2n-2");
     }
 }
