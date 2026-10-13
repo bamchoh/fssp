@@ -533,36 +533,459 @@ fn par_simulate<'a>(
     });
 }
 
+// 故障区間。1 始まり inclusive (start, end)、昇順・非重複・隣接を統合済み。
+// (Fault-Tolerant FSSP SPEC.md / Umeo 2004 §2.3.1 の defective segment に対応)
+struct FaultSpec {
+    segments: Vec<(usize, usize)>,
+}
+
+// 配列の区間構造。intact=true が正常区間 I_i、false が故障区間 D_i。
+#[derive(Debug)]
+struct FaultSeg {
+    intact: bool,
+    start: usize,
+    end: usize,
+}
+
+// 分析結果。mask はセル配列 (0..=n+1、境界セル込み) と同じインデックスで
+// 並行する故障フラグ。故障挙動の実装(次ステップ)でそのまま引き渡す。
+#[derive(Debug)]
+struct FaultAnalysis {
+    mask: Vec<bool>,
+    segments: Vec<FaultSeg>,
+}
+
+fn parse_fault_spec(spec: &str, n: usize) -> Result<FaultSpec, String> {
+    if spec.trim().is_empty() {
+        return Err("empty fault spec".to_string());
+    }
+
+    let mut tokens: Vec<(usize, usize)> = vec![];
+    for token in spec.split(',') {
+        let token = token.trim();
+        let (left, right) = match token.split_once('-') {
+            Some((l, r)) => (l, r),
+            None => (token, token),
+        };
+        let (a, b) = match (left.parse::<usize>(), right.parse::<usize>()) {
+            (Ok(a), Ok(b)) => (a, b),
+            _ => return Err(format!("invalid fault segment: {}", token)),
+        };
+        if a == 0 || b > n {
+            return Err(format!("cell position out of range 1..{}: {}", n, token));
+        }
+        if a > b {
+            return Err(format!("invalid fault segment (end < start): {}", token));
+        }
+        tokens.push((a, b));
+    }
+
+    tokens.sort_unstable();
+
+    for pair in tokens.windows(2) {
+        if pair[1].0 <= pair[0].1 {
+            return Err(format!(
+                "overlapping fault segments: {}-{} and {}-{}",
+                pair[0].0, pair[0].1, pair[1].0, pair[1].1
+            ));
+        }
+    }
+
+    // 隣接(接触)する区間は同じ故障区間なので統合する。-f 3,4 は -f 3-4 と等価。
+    // 統合しないと間に空の正常区間が挟まり I_i / D_i の構造分析が壊れる。
+    let mut segments: Vec<(usize, usize)> = vec![];
+    for &(a, b) in &tokens {
+        match segments.last_mut() {
+            // 直前の区間と接触していれば 1 つの故障区間に統合する
+            Some(last) if last.1 + 1 >= a => last.1 = last.1.max(b),
+            _ => segments.push((a, b)),
+        }
+    }
+
+    // 論文 §2.3.1: 配列は両端に正常区間を持つ配列に限って調べられる(一般性を
+    // 失わない制限)。将軍は左端のセル 1 なので、セル 1 と n は正常でなければならない。
+    let first = segments.first().unwrap();
+    let last = segments.last().unwrap();
+    if first.0 == 1 {
+        return Err("cell 1 (general) must be intact".to_string());
+    }
+    if last.1 == n {
+        return Err(format!("cell {} (right end) must be intact", n));
+    }
+
+    Ok(FaultSpec { segments })
+}
+
+fn analyze_faults(fault: &FaultSpec, n: usize) -> FaultAnalysis {
+    let mut mask = vec![false; n + 2];
+    for &(a, b) in &fault.segments {
+        for cell in &mut mask[a..=b] {
+            *cell = true;
+        }
+    }
+
+    // I1 D1 I2 D2 ... Ip Dp I(p+1) の交互構造に展開する
+    let mut segments: Vec<FaultSeg> = vec![];
+    let mut pos = 1;
+    for &(a, b) in &fault.segments {
+        segments.push(FaultSeg {
+            intact: true,
+            start: pos,
+            end: a - 1,
+        });
+        segments.push(FaultSeg {
+            intact: false,
+            start: a,
+            end: b,
+        });
+        pos = b + 1;
+    }
+    segments.push(FaultSeg {
+        intact: true,
+        start: pos,
+        end: n,
+    });
+
+    FaultAnalysis { mask, segments }
+}
+
+// 条件判定とサマリー出力。判定値を (A1/A2 の失敗リスト, A3 の失敗リスト) で返し、
+// --strict の判定は main 側で行う。
+fn report_faults(analysis: &FaultAnalysis) -> (Vec<String>, Vec<String>) {
+    // 正常区間 I_i と故障区間 D_i の数。構造は必ず D と I が交互で I が 1 多い。
+    let p = analysis.segments.iter().filter(|s| !s.intact).count();
+
+    let mut fail_a1a2: Vec<String> = vec![];
+    let mut fail_a3: Vec<String> = vec![];
+
+    // D_i は交互構造の (2i) 番目(1 始まり)。左隣の正常区間が I_i。
+    for i in 1..=p {
+        let d = &analysis.segments[i * 2 - 1];
+        let intact = &analysis.segments[i * 2 - 2];
+        let n_i = intact.end - intact.start + 1;
+        let m_i = d.end - d.start + 1;
+
+        // A1/A2 の前提 (Theorem 2/3): n_i >= m_i
+        if n_i < m_i {
+            fail_a1a2.push(format!(
+                "D{} (I{}={} < D{}={})",
+                i, i, n_i, i, m_i
+            ));
+        }
+        // A3 の追加条件 (Theorem 4): n_i + m_i >= p - i (i = 1..p)
+        let need = p - i;
+        if n_i + m_i < need {
+            fail_a3.push(format!(
+                "D{} (n_i+m_i={} < p-i={})",
+                i,
+                n_i + m_i,
+                need
+            ));
+        }
+    }
+
+    let mut counts = [0usize; 2]; // [defective, intact] の出現順カウンタ
+    let seg_str: Vec<String> = analysis
+        .segments
+        .iter()
+        .map(|s| {
+            counts[s.intact as usize] += 1;
+            format!(
+                "{}{}[{}-{}]",
+                if s.intact { "I" } else { "D" },
+                counts[s.intact as usize],
+                s.start,
+                s.end
+            )
+        })
+        .collect();
+    println!("segments: {}", seg_str.join(" "));
+
+    if fail_a1a2.is_empty() {
+        println!("constraint n_i>=m_i (A1/A2): OK");
+    } else {
+        println!("constraint n_i>=m_i (A1/A2): FAIL ({})", fail_a1a2.join(", "));
+    }
+    if fail_a3.is_empty() {
+        println!("constraint n_i+m_i>=p-i (A3): OK");
+    } else {
+        println!(
+            "constraint n_i+m_i>=p-i (A3): FAIL ({})",
+            fail_a3.join(", ")
+        );
+    }
+    println!("note: defective cells relay signals at 1/1; freeze/thaw signals are a separate control layer");
+
+    (fail_a1a2, fail_a3)
+}
+
+// ── 故障セル中継層 + 制御層 ──────────────────────────────────────────────
+// 故障セルのモデル(2026-10-13 壁打ちで確定):
+//   - 故障セルは t=n で t=n-1 の左セルと右セルの状態を保持する(= 1 ステップ遅れの
+//     純シフト)。故障セルの遷移には通常セルのルール表を使わない。
+//   - 左から来た値はそのまま右へ、右から来た値はそのまま左へ(方向保存の 1/1)。
+//     連鎖する故障セルでは対応する方向のストリーム値が渡る。
+//   - 隣接セルの故障/正常は故障フラグ(mask)で判定する。www は配列の外側の壁のみ。
+// 制御層:
+//   - 凍結/解凍信号はセル状態とは別のチャネル(ctrl)に載る。ルールファイルは
+//     触らず、シミュレーター内部で 1/1 左向きに伝播し、到着したセルを
+//     凍結(状態変化停止)/解凍(再開)する。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Ctrl {
+    None,
+    Freeze,
+    Thaw,
+}
+
+struct FaultField {
+    mask: Vec<bool>,      // 実セル 1..=n が true。0 と n+1(壁)は false
+    to_right: Vec<u8>,    // L→R ストリーム: c が t に保持する「左に由来する値」
+    to_left: Vec<u8>,     // R→L ストリーム: c が t に保持する「右に由来する値」
+    ctrl: Vec<Ctrl>,      // 制御メッセージチャネル(1..=n)
+    frozen: Vec<bool>,    // 凍結フラグ(正常セルのみ効果あり)
+    to_right_nex: Vec<u8>,
+    to_left_nex: Vec<u8>,
+    ctrl_nex: Vec<Ctrl>,
+}
+
+impl FaultField {
+    fn new(mask: &[bool], config: &Config) -> FaultField {
+        let n = mask.len() - 2;
+        let mut field = FaultField {
+            mask: mask.to_vec(),
+            to_right: vec![config.soldier as u8; n + 2],
+            to_left: vec![config.soldier as u8; n + 2],
+            ctrl: vec![Ctrl::None; n + 2],
+            frozen: vec![false; n + 2],
+            to_right_nex: vec![config.soldier as u8; n + 2],
+            to_left_nex: vec![config.soldier as u8; n + 2],
+            ctrl_nex: vec![Ctrl::None; n + 2],
+        };
+        // 壁は故障ではない
+        field.mask[0] = false;
+        field.mask[n + 1] = false;
+        field
+    }
+
+    // 1 ステップ: cur の状態から全セルの t+1 状態を next_cells に計算してから
+    // ストリーム/制御チャネルを進める(更新順序に結果が依存しない)。
+    fn fault_step(&mut self, current: &mut [u8], next_cells: &mut [u8], config: &Config) {
+        let n = self.mask.len() - 2;
+
+        // 1) 制御メッセージの到着処理。凍結/解凍は到着した時点で反映される
+        //    (凍結されたセルはこのステップの状態変化が止まる)。
+        for c in 1..=n {
+            match self.ctrl[c] {
+                Ctrl::Freeze => {
+                    if !self.mask[c] {
+                        self.frozen[c] = true;
+                    }
+                }
+                Ctrl::Thaw => {
+                    if !self.mask[c] {
+                        self.frozen[c] = false;
+                    }
+                }
+                Ctrl::None => {}
+            }
+        }
+
+        // 2) 全セルの次状態を計算(故障セルはシフト、正常セルはルール表)
+        for c in 1..=n {
+            if self.mask[c] {
+                // 故障セル: 左に由来する値を保ったまま右へ渡す準備をする。
+                // 左隣の「保持値」は、左隣が故障ならその L→R ストリーム、
+                // 正常ならそのセルの現在状態。
+                self.to_right_nex[c] = if self.mask[c - 1] {
+                    self.to_right[c - 1]
+                } else {
+                    current[c - 1]
+                };
+                self.to_left_nex[c] = if self.mask[c + 1] {
+                    self.to_left[c + 1]
+                } else {
+                    current[c + 1]
+                };
+                // 故障セルの基本状態は変わらない(遷移規則は使わない)
+                next_cells[c] = current[c];
+            } else {
+                // ルール入力: 隣が故障セルなら、こちらへ向かって流れてきた
+                // ストリーム値を見る(左隣からは L→R ストリーム、右隣からは
+                // R→L ストリーム)。
+                let left = if self.mask[c - 1] {
+                    self.to_right[c - 1]
+                } else {
+                    current[c - 1]
+                };
+                let right = if self.mask[c + 1] {
+                    self.to_left[c + 1]
+                } else {
+                    current[c + 1]
+                };
+                next_cells[c] = if self.frozen[c] {
+                    current[c] // 凍結: 状態変化を止めて保持
+                } else {
+                    config.rules[((left as usize) << 8) + ((current[c] as usize) << 4) + (right as usize)]
+                };
+            }
+        }
+
+        // 3) 制御メッセージを左へ 1/1 で移動(frozen/故障/正常の区別なく通過する)
+        for c in 1..=n {
+            self.ctrl_nex[c] = if c < n { self.ctrl[c + 1] } else { Ctrl::None };
+        }
+
+        std::mem::swap(&mut self.to_right, &mut self.to_right_nex);
+        std::mem::swap(&mut self.to_left, &mut self.to_left_nex);
+        std::mem::swap(&mut self.ctrl, &mut self.ctrl_nex);
+    }
+
+    // ストリーム内容のダンプ(-f 指定時のみ。各行の列幅は状態行と揃えて位置を
+    // 対応させる)。正常セルは空白。
+    fn dump_streams(&self, current: &[u8], config: &Config, prefix: &str) {
+        let mut row = String::from(prefix);
+        for c in 1..current.len() - 1 {
+            let width = config.states[current[c] as usize].name.len();
+            let text: String = if self.mask[c] {
+                let value = if prefix == "R:" { self.to_right[c] } else { self.to_left[c] };
+                let name = &config.states[value as usize].name;
+                format!("[{}]", name)
+            } else {
+                String::new()
+            };
+            if text.chars().count() < width {
+                row.push('|');
+                row.push_str(&" ".repeat(width - text.chars().count()));
+                row.push_str(&text);
+            } else {
+                row.push('|');
+                row.push_str(&text);
+            }
+        }
+        row.push('|');
+        println!("{}", row);
+    }
+}
+
+// 同期成功の判定は正常セルのみで行う(故障セルは発火状態に遷移しない)
+fn fired_intact(cells: &[u8], mask: &[bool], firing: usize) -> bool {
+    for i in 1..cells.len() - 1 {
+        if !mask[i] && cells[i] as usize != firing {
+            return false;
+        }
+    }
+    true
+}
+
+// 故障ありの逐次シミュレーション。injections は (種類, セル, 時刻)。
+// メッセージは「時刻 t にその時刻のセルに置かれる=そのステップで到着処理される」。
+// 戻り値は終了した時刻(正常セル全発火または上限)。
+fn simulate_fault(
+    current: &mut Vec<u8>,
+    next_cells: &mut Vec<u8>,
+    ff: &mut FaultField,
+    config: &Config,
+    cap: usize,
+    injections: &[(Ctrl, usize, usize)],
+    dump: bool,
+    color: bool,
+) -> usize {
+    if dump {
+        dump_line(current, config, color);
+    }
+    let mut t = 0;
+    loop {
+        for &(kind, cell, time) in injections {
+            if time == t {
+                ff.ctrl[cell] = kind;
+            }
+        }
+        // 次状態を next_cells に計算してから入れ替える(2 バッファ交互)
+        ff.fault_step(&mut current[..], &mut next_cells[..], config);
+        std::mem::swap(current, next_cells);
+        t += 1;
+        if dump {
+            dump_line(current, config, color);
+            if !color {
+                ff.dump_streams(current, config, "R:");
+                ff.dump_streams(current, config, "L:");
+            }
+        }
+        if fired_intact(current, &ff.mask, config.firing) || t >= cap {
+            break;
+        }
+    }
+    t
+}
+
+// 注入セルの範囲検証(セル番号は実セル内)
+fn validate_injections(injections: &[(Ctrl, usize, usize)], n: usize) -> Vec<(Ctrl, usize, usize)> {
+    for &(kind, cell, _) in injections {
+        if cell > n {
+            let kind = match kind {
+                Ctrl::Freeze => "freeze",
+                Ctrl::Thaw => "thaw",
+                Ctrl::None => "none",
+            };
+            eprintln!("--inject: cell out of range 1..{}: {}@{}", n, kind, cell);
+            eprintln!("{}", USAGE);
+            std::process::exit(1);
+        }
+    }
+    injections.to_vec()
+}
+
+const USAGE: &str = "usage: fssp -r <rulefile> [-s size] [-f faults] [--inject ...] [-t steps] [--strict] [-d] [-c]";
+
 fn main() {
     let args: Vec<String> = env::args().collect();
 
-    // 使い方: fssp.exe -r <rulefile> [-s size] [-d] [-c]
-    //   -r / --rule  : 遷移規則ファイル(必須)
-    //   -s / --size  : セル数(既定 10)
-    //   -d / --dump  : 逐次実行して 1 ステップごとに途中経過を出力
+    // 使い方: fssp.exe -r <rulefile> [-s size] [-f faults] [--strict] [-d] [-c]
+    //   -r / --rule   : 遷移規則ファイル(必須)
+    //   -s / --size   : セル数(既定 10)
+    //   -f / --fault  : 故障区間リスト(1 始まり、カンマ区切り、a-b は a..b)。
+    //                   隣接する区間は 1 つの故障区間に統合される
+    //   --strict      : 故障配置が n_i >= m_i (Umeo A1/A2 の条件) を満たさない
+    //                   場合に実行せず終了する(無指定時は警告して続行)
+    //   --inject ...  : 制御メッセージの注入(デバッグ用)。freeze|thaw@セル@時刻。
+    //                   複数可。故障指定時のみ効果がある
+    //   -t / --steps  : 故障あり実行のステップ上限(既定 2n-2+最大注入時刻)
+    //   -d / --dump   : 逐次実行して 1 ステップごとに途中経過を出力
     //                  (ruby の -d と同じ書式。
     //                   並行実行のダンプとは干渉するため逐次にする)
-    //   -c / --color : ダンプを dumpln と同じ ANSI 色付きに
+    //   -c / --color  : ダンプを dumpln と同じ ANSI 色付きに
     //                  (-c 単独指定時は -d を兼ねる)
     let mut dump_mode = false;
     let mut color_mode = false;
+    let mut strict_mode = false;
     let mut size_arg: Option<usize> = None;
     let mut rule_arg: Option<String> = None;
+    let mut fault_arg: Option<String> = None;
+    let mut steps_arg: Option<usize> = None;
+    let mut injections: Vec<(Ctrl, usize, usize)> = vec![];
 
     // 位置引数は取らず、既定のルールファイルも持たない(必ず -r で指定する)。
     // 解釈できない引数や値の欠落はエラーにする。以前は数値に解釈できない位置引数を
     // 黙って捨てていたため、`fssp rulefile 5` と打つと既定の waksman で走ってしまい
     // 別のルールセットの発火と紛らわしかった。
-    const USAGE: &str = "usage: fssp -r <rulefile> [-s size] [-d] [-c]";
+    // 位置引数は取らず、既定のルールファイルも持たない(必ず -r で指定する)。
+    // 解釈できない引数や値の欠落はエラーにする。以前は数値に解釈できない位置引数を
+    // 黙って捨てていたため、`fssp rulefile 5` と打つと既定の waksman で走ってしまい
+    // 別のルールセットの発火と紛らわしかった。
     const OPTIONS: &str = concat!(
         "  -r, --rule <file>     遷移規則ファイル(必須)\n",
         "  -s, --size <n>        セル数(既定 10)\n",
+        "  -f, --fault <list>    故障区間リスト(1 始まり、カンマ区切り、例: 3-5,10)\n",
+        "  --inject <kind@c@t>   制御メッセージ注入(デバッグ用、複数可)\n",
+        "                        kind: freeze|thaw、c: セル番号、t: 注入時刻\n",
+        "  -t, --steps <k>       故障あり実行のステップ上限(既定 2n-2+最大注入時刻)\n",
+        "  --strict              n_i>=m_i (A1/A2 条件) を満たす配置以外は実行しない\n",
         "  -d, --dump            1 ステップごとの途中経過を出力(ruby -d と同書式)\n",
         "  -c, --color           ダンプを ANSI 色付きに(-c は -d を兼ねる)\n",
         "  -h, --help            このメッセージ"
     );
 
-    // -r / -s は値を取るので index で回す
+    // -r / -s / -f / --inject / -t は値を取るので index で回す
     let mut i = 1;
     while i < args.len() {
         let opt = args[i].as_str();
@@ -577,7 +1000,8 @@ fn main() {
                 color_mode = true;
                 dump_mode = true;
             }
-            "-r" | "--rule" | "-s" | "--size" => {
+            "--strict" => strict_mode = true,
+            "-r" | "--rule" | "-s" | "--size" | "-f" | "--fault" | "--inject" | "-t" | "--steps" => {
                 i += 1;
                 let value = match args.get(i) {
                     Some(v) => v,
@@ -590,7 +1014,7 @@ fn main() {
 
                 if opt == "-r" || opt == "--rule" {
                     rule_arg = Some(value.clone());
-                } else {
+                } else if opt == "-s" || opt == "--size" {
                     match value.parse::<usize>() {
                         Ok(n) => size_arg = Some(n),
                         Err(_) => {
@@ -599,6 +1023,54 @@ fn main() {
                             std::process::exit(1);
                         }
                     }
+                } else if opt == "-f" || opt == "--fault" {
+                    fault_arg = Some(value.clone());
+                } else if opt == "-t" || opt == "--steps" {
+                    match value.parse::<usize>() {
+                        Ok(k) if k > 0 => steps_arg = Some(k),
+                        _ => {
+                            eprintln!("{}: invalid step count: {}", opt, value);
+                            eprintln!("{}", USAGE);
+                            std::process::exit(1);
+                        }
+                    }
+                } else {
+                    // --inject kind@cell@time
+                    let parts: Vec<&str> = value.split('@').collect();
+                    let (kind, cell, time) = match (parts.as_slice(), parts.len()) {
+                        ([k, c, t], 3) => (k, c, t),
+                        _ => {
+                            eprintln!("{}: invalid injection (expect kind@cell@time): {}", opt, value);
+                            eprintln!("{}", USAGE);
+                            std::process::exit(1);
+                        }
+                    };
+                    let kind = match *kind {
+                        "freeze" | "f" => Ctrl::Freeze,
+                        "thaw" | "t" => Ctrl::Thaw,
+                        _ => {
+                            eprintln!("{}: invalid kind (freeze|thaw): {}", opt, kind);
+                            eprintln!("{}", USAGE);
+                            std::process::exit(1);
+                        }
+                    };
+                    let cell = match cell.parse::<usize>() {
+                        Ok(c) if c >= 1 => c,
+                        _ => {
+                            eprintln!("{}: invalid cell: {}", opt, cell);
+                            eprintln!("{}", USAGE);
+                            std::process::exit(1);
+                        }
+                    };
+                    let time = match time.parse::<usize>() {
+                        Ok(t) => t,
+                        _ => {
+                            eprintln!("{}: invalid time: {}", opt, time);
+                            eprintln!("{}", USAGE);
+                            std::process::exit(1);
+                        }
+                    };
+                    injections.push((kind, cell, time));
                 }
             }
             v => {
@@ -638,6 +1110,82 @@ fn main() {
         }
     }
 
+    // 故障区間の指定があれば解析してサマリーを出す。
+    // この段階では故障セルの挙動(1/1 パイプライン中継)は未実装のため、
+    // シミュレーション自体は通常ルールのまま走る。
+    if fault_arg.is_some() {
+        let fault = match parse_fault_spec(fault_arg.as_ref().unwrap(), cell_size) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("--fault: {}", e);
+                eprintln!("{}", USAGE);
+                std::process::exit(1);
+            }
+        };
+
+        let def_str: Vec<String> = fault
+            .segments
+            .iter()
+            .map(|&(a, b)| {
+                if a == b {
+                    format!("{}", a)
+                } else {
+                    format!("{}-{}", a, b)
+                }
+            })
+            .collect();
+        println!("cells: {}, defective: {}", cell_size, def_str.join(","));
+
+        let analysis = analyze_faults(&fault, cell_size);
+        let (fail_a1a2, _) = report_faults(&analysis);
+
+        if !fail_a1a2.is_empty() {
+            eprintln!(
+                "warning: fault layout violates n_i>=m_i; sync guarantee of Umeo A1/A2 does not apply"
+            );
+            if strict_mode {
+                eprintln!("--strict: refusing to run");
+                std::process::exit(1);
+            }
+        }
+
+        // 故障ありは逐次実行する(制御層・中継は HALO をまたぐ隣接参照を含み、
+        // 並列パスのトークン同期設計とは別の調整が必要)。
+        let injections = validate_injections(&injections, cell_size);
+        let mut ff = FaultField::new(&analysis.mask, &config);
+        let base_cap = (cell_size << 1) - 2;
+        let max_t = injections.iter().map(|&(_, _, t)| t).max().unwrap_or(0);
+        let cap = steps_arg.unwrap_or(base_cap + max_t);
+
+        let start = Instant::now();
+        let mut current = first_line(cell_size, &config);
+        let mut next_cells = new_line(cell_size, &config);
+        let t = simulate_fault(
+            &mut current,
+            &mut next_cells,
+            &mut ff,
+            &config,
+            cap,
+            &injections,
+            dump_mode,
+            color_mode,
+        );
+
+        if fired_intact(&current, &ff.mask, config.firing) {
+            println!("SYNCED (intact cells) at t={}", t);
+        } else {
+            println!("NOT SYNCED (stopped at t={})", t);
+        }
+
+        let end = start.elapsed();
+        println!(
+            "time: {}.{:03}s",
+            end.as_secs(),
+            end.subsec_nanos() / 1_000_000
+        );
+        std::process::exit(0);
+    }
+
     #[cfg(target_arch = "x86_64")]
     let use_avx2 = is_x86_feature_detected!("avx2");
     #[cfg(not(target_arch = "x86_64"))]
@@ -675,4 +1223,235 @@ fn main() {
         end.as_secs(),
         end.subsec_nanos() / 1_000_000
     );
+}#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn st(name: &str, class: &str) -> State {
+        State {
+            name: name.to_string(),
+            foreground: "ffffff".to_string(),
+            background: "000000".to_string(),
+            class: class.to_string(),
+        }
+    }
+
+    // 合成ルールセット(単体テスト用):
+    //   状態 0=www(external) 1=Q(soldier) 2=S(自走信号) 3=G(general)
+    //   S は Q の列を左右両方向に 1/1 で進む。中心 S は 1 ステップで Q に戻り、
+    //   周囲の Q は「いずれかの隣が S なら S になる」。
+    fn tiny_config() -> Config {
+        let states = vec![
+            st("www", "external"),
+            st("Q", "soldier"),
+            st("S", ""),
+            st("G", "general"),
+        ];
+        let mut rules = [0u8; 8192];
+        for l in 0u8..4 {
+            for r in 0u8..4 {
+                // 中心 Q: 隣に S がいれば S になる(両方向 1/1 進行)、いなければ Q
+                rules[((l as usize) << 8) + (1 << 4) + (r as usize)] =
+                    if l == 2 || r == 2 { 2 } else { 1 };
+                // 中心 S: 発信して Q に戻る
+                rules[((l as usize) << 8) + (2 << 4) + (r as usize)] = 1;
+            }
+        }
+        Config {
+            states,
+            general: 3,
+            soldier: 1,
+            firing: 3,
+            external: 0,
+            rules,
+        }
+    }
+
+    fn fault_mask(n: usize, a: usize, b: usize) -> Vec<bool> {
+        let mut mask = vec![false; n + 2];
+        for c in a..=b {
+            mask[c] = true;
+        }
+        mask
+    }
+
+    fn run_steps(
+        cur: &mut Vec<u8>,
+        nex: &mut Vec<u8>,
+        ff: &mut FaultField,
+        cfg: &Config,
+        k: usize,
+    ) {
+        for _ in 0..k {
+            ff.fault_step(&mut cur[..], &mut nex[..], cfg);
+            std::mem::swap(cur, nex);
+        }
+    }
+
+    // L→R: S を故障区間(5-6)の手前セルに置くと、区間を 1/1 で渡って対岸の
+    // 正常セルが反応し、以降も 1/1 で進む
+    #[test]
+    fn relay_right_crosses_defect() {
+        let cfg = tiny_config();
+        let n = 10;
+        let mut cur = new_line(n, &cfg);
+        let mut nex = new_line(n, &cfg);
+        let mut ff = FaultField::new(&fault_mask(n, 5, 6), &cfg);
+        cur[4] = 2; // セル 4 に S
+
+        run_steps(&mut cur, &mut nex, &mut ff, &cfg, 2);
+        assert_eq!(ff.to_right[6], 2, "t=2: 区間右端が対岸に S を提示");
+        assert_eq!(cur[7], 1, "t=2: 対岸セルはまだ反応していない");
+        assert_eq!(cur[5], 1, "故障セルの基本状態は不変");
+
+        run_steps(&mut cur, &mut nex, &mut ff, &cfg, 1);
+        assert_eq!(cur[7], 2, "t=3: 対岸セルが S で反応(全区間 1/1)");
+        assert_eq!(ff.to_right[6], 1, "t=3: 通過後は Q が流れている");
+
+        run_steps(&mut cur, &mut nex, &mut ff, &cfg, 1);
+        assert_eq!(cur[8], 2, "t=4: 対岸で S が継続して進む");
+    }
+
+    // R→L 逆方向も同じ 1/1
+    #[test]
+    fn relay_left_crosses_defect() {
+        let cfg = tiny_config();
+        let n = 10;
+        let mut cur = new_line(n, &cfg);
+        let mut nex = new_line(n, &cfg);
+        let mut ff = FaultField::new(&fault_mask(n, 5, 6), &cfg);
+        cur[8] = 2; // セル 8 に S
+
+        run_steps(&mut cur, &mut nex, &mut ff, &cfg, 3);
+        assert_eq!(ff.to_left[5], 2, "t=3: 区間左端が対岸に S を提示");
+        assert_eq!(cur[4], 1);
+
+        run_steps(&mut cur, &mut nex, &mut ff, &cfg, 1);
+        assert_eq!(cur[4], 2, "t=4: 対岸セルが S で反応(全区間 1/1)");
+    }
+
+    // 逆方向 2 信号が同時に交差しても干渉しない
+    #[test]
+    fn relay_both_directions_simultaneously() {
+        let cfg = tiny_config();
+        let n = 10;
+        let mut cur = new_line(n, &cfg);
+        let mut nex = new_line(n, &cfg);
+        let mut ff = FaultField::new(&fault_mask(n, 5, 6), &cfg);
+        cur[4] = 2;
+        cur[8] = 2;
+
+        run_steps(&mut cur, &mut nex, &mut ff, &cfg, 3);
+        assert_eq!(ff.to_left[5], 2, "t=3: R→L ストリームの区間左端に S");
+        assert_eq!(cur[7], 2, "t=3: 右からの S を対岸で受け取り");
+        assert_eq!(cur[4], 1, "左側はまだ反応していない");
+
+        run_steps(&mut cur, &mut nex, &mut ff, &cfg, 1);
+        assert_eq!(cur[4], 2, "t=4: 左からの S を対岸で受け取り");
+    }
+
+    // 故障あり・信号なし: 何も起きない(Q は Q のまま、ストリームも Q)
+    #[test]
+    fn idle_stays_quiescent() {
+        let cfg = tiny_config();
+        let n = 10;
+        let mut cur = new_line(n, &cfg);
+        let mut nex = new_line(n, &cfg);
+        let mut ff = FaultField::new(&fault_mask(n, 5, 6), &cfg);
+
+        run_steps(&mut cur, &mut nex, &mut ff, &cfg, 5);
+        for c in 1..=n {
+            assert_eq!(cur[c], 1, "cell {}", c);
+        }
+        for c in 5..=6 {
+            assert_eq!(ff.to_right[c], 1);
+            assert_eq!(ff.to_left[c], 1);
+        }
+    }
+
+    // 凍結信号は 1/1 左向きに伝わり、到着したセルを順に凍結する
+    #[test]
+    fn freeze_progressively() {
+        let cfg = tiny_config();
+        let n = 8;
+        let mut cur = new_line(n, &cfg);
+        let mut nex = new_line(n, &cfg);
+        let mut ff = FaultField::new(&fault_mask(n, 0, 0), &cfg); // 故障なし
+        ff.ctrl[4] = Ctrl::Freeze; // t=0 にセル 4 に凍結メッセージ
+
+        run_steps(&mut cur, &mut nex, &mut ff, &cfg, 1);
+        assert!(ff.frozen[4], "t=1: セル4凍結");
+        run_steps(&mut cur, &mut nex, &mut ff, &cfg, 1);
+        assert!(ff.frozen[3], "t=2: セル3凍結");
+        run_steps(&mut cur, &mut nex, &mut ff, &cfg, 1);
+        assert!(ff.frozen[2], "t=3: セル2凍結");
+        run_steps(&mut cur, &mut nex, &mut ff, &cfg, 1);
+        assert!(ff.frozen[1], "t=4: セル1凍結(左端到達)");
+
+        run_steps(&mut cur, &mut nex, &mut ff, &cfg, 1);
+        for c in 1..=n {
+            assert_eq!(ff.ctrl[c], Ctrl::None, "t=5: メッセージは壁で消滅");
+        }
+    }
+
+    // 凍結されたセルの前で信号は消える(凍結セルは状態変化を止めて保持)
+    #[test]
+    fn freeze_blocks_signal() {
+        let cfg = tiny_config();
+        let n = 8;
+        let mut cur = new_line(n, &cfg);
+        let mut nex = new_line(n, &cfg);
+        let mut ff = FaultField::new(&fault_mask(n, 0, 0), &cfg);
+        ff.ctrl[4] = Ctrl::Freeze; // t=0: セル 4 を凍結
+        cur[3] = 2; // t=0: セル 3 に S(右へ進もうとする)
+
+        run_steps(&mut cur, &mut nex, &mut ff, &cfg, 1);
+        assert_eq!(cur[4], 1, "t=1: 凍結セルは反応せず Q を保持");
+        assert!(ff.frozen[4]);
+        run_steps(&mut cur, &mut nex, &mut ff, &cfg, 2);
+        assert_eq!(cur[4], 1, "t=3: 保持を維持");
+        assert_eq!(cur[5], 1, "信号は凍結面の先へ進んでいない");
+    }
+
+    // 制御メッセージは故障区間を凍結せず通過する
+    #[test]
+    fn control_crosses_defective_segment() {
+        let cfg = tiny_config();
+        let n = 10;
+        let mut cur = new_line(n, &cfg);
+        let mut nex = new_line(n, &cfg);
+        let mut ff = FaultField::new(&fault_mask(n, 5, 6), &cfg);
+        ff.ctrl[7] = Ctrl::Freeze; // t=0: セル 7(区間の右隣)に注入
+
+        run_steps(&mut cur, &mut nex, &mut ff, &cfg, 1);
+        assert!(ff.frozen[7], "t=1: セル7凍結");
+        assert!(!ff.frozen[5] && !ff.frozen[6], "故障セルは凍結しない");
+        run_steps(&mut cur, &mut nex, &mut ff, &cfg, 3);
+        assert!(ff.frozen[4], "t=4: メッセージは区間を渡って対岸も凍結");
+        run_steps(&mut cur, &mut nex, &mut ff, &cfg, 3);
+        assert!(ff.frozen[1], "t=7: 左端まで到達");
+    }
+
+    // 解凍後は信号の通過を再び受け付ける(再開の証明)
+    #[test]
+    fn thaw_resumes_signal_passing() {
+        let cfg = tiny_config();
+        let n = 8;
+        let mut cur = new_line(n, &cfg);
+        let mut nex = new_line(n, &cfg);
+        let mut ff = FaultField::new(&fault_mask(n, 0, 0), &cfg);
+        ff.ctrl[4] = Ctrl::Freeze; // t=0: セル4を凍結
+
+        run_steps(&mut cur, &mut nex, &mut ff, &cfg, 3);
+        assert!(ff.frozen[4], "t=3: セル4は凍結中");
+        ff.ctrl[4] = Ctrl::Thaw; // t=3 に解凍メッセージを置く
+
+        run_steps(&mut cur, &mut nex, &mut ff, &cfg, 3);
+        assert!(!ff.frozen[4], "t=6: 解凍済み");
+
+        // 解凍後に S を置くと、凍結だったセル 4 も通過を認める
+        cur[2] = 2;
+        run_steps(&mut cur, &mut nex, &mut ff, &cfg, 2);
+        assert_eq!(cur[4], 2, "t=8: 解凍されたセル 4 が信号を通過させた");
+    }
 }
