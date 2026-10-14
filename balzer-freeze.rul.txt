@@ -1,5 +1,5 @@
 SL1rule
-state_number 22
+state_number 23
 FB   @101010,808080,others
 A    @000000,0080FF,others
 B    @000000,00FFFF,others
@@ -22,9 +22,10 @@ NG   @101010,808080,others
 W    @101010,404860,others
 FT2  @101010,7090E0,others
 CB   @101010,0088CC,others
+TR   @101010,00CCAA,others
 general_number 1
 1,1
-rule_number 3461
+rule_number 3482
 A    ##A    ##A    ->A    
 A    ##A    ##L    ->A    
 A    ##A    ##Q    ->A    
@@ -2686,7 +2687,7 @@ FL   ##L    ##FT   ->L
 C    ##FL   ##L    ->L    
 FR   ##M    ##FT   ->M    
 A    ##M    ##FT   ->M    
-L    ##L    ##FT   ->L    
+L    ##L    ##FT   ->FT   
 B    ##FC   ##L    ->R    
 FB   ##FL   ##L    ->C    
 C    ##L    ##FT   ->M    
@@ -3486,3 +3487,24 @@ FQ   ##CB   ##CB   ->FL
 FR   ##CB   ##CB   ->FL   
 FS   ##CB   ##CB   ->FL   
 FT   ##CB   ##CB   ->FL   
+CB   ##L    ##L    ->TR   
+CB   ##L    ##www  ->FT   
+TR   ##L    ##L    ->TR   
+TR   ##L    ##www  ->FT   
+L    ##TR   ##L    ->L    
+www  ##TR   ##L    ->L    
+L    ##TR   ##FT   ->L    
+www  ##TR   ##FT   ->L    
+www  ##L    ##FT   ->FT   
+L    ##FT   ##L    ->L    
+www  ##FT   ##L    ->L    
+L    ##FT   ##www  ->L    
+CB   ##L    ##FT2  ->FT   
+TR   ##L    ##FT2  ->FT   
+L    ##FT   ##FT2  ->L    
+TR   ##L    ##W    ->TR   
+www  ##L    ##TR   ->L    
+L    ##L    ##TR   ->L    
+FT   ##L    ##www  ->L    
+FT   ##L    ##L    ->L    
+FT   ##L    ##FT2  ->L    

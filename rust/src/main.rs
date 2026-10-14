@@ -899,6 +899,8 @@ struct FaultField {
     w_state: Option<u8>,  // R→L 管路のアイドル提示(解凍前の境界マーカー)
     ft_state: Option<u8>, // 解凍信号
     ft2_state: Option<u8>, // 解凍後のアイドル提示(σ 線上の壁反射と凍結起動の区別)
+    cb_state: Option<u8>,  // 境界 Carrier(fast 信号の管路 entry pickup 対象)
+    tr_state: Option<u8>,  // fast 継続の対岸横断状態
 }
 
 impl FaultField {
@@ -911,6 +913,8 @@ impl FaultField {
         let w_state = find_state_index(config, "W");
         let ft_state = find_state_index(config, "FT");
         let ft2_state = find_state_index(config, "FT2");
+        let cb_state = find_state_index(config, "CB");
+        let tr_state = find_state_index(config, "TR");
         // 信号層のアイドル値。R→L 管路(I_i 右端セルの右入力)は境界マーカー W
         // を提示する(www だと凍結起動と素の壁反射 (C,L,www)->M が区別できず衝突)。
         // 解凍信号 FT が口を通過した後は FT2(解凍後位相)に切り替わる。
@@ -931,6 +935,8 @@ impl FaultField {
             w_state,
             ft_state,
             ft2_state,
+            cb_state,
+            tr_state,
         };
         // 壁は故障ではない
         field.mask[0] = false;
@@ -975,32 +981,64 @@ impl FaultField {
                 // 場所)では計画された注入信号を取り込み、それ以外は www を充填する
                 // (管からセル状態の生値を取り込まない)。
                 let w = self.w_state;
+                // 入口 pickup(0 成本: 境界セルの表示の時刻の次ステップに管路の
+                // 先頭セルに入る = 論文の「反射の到着吸収」)。carrier(CB = 凍結
+                // 起動 Carrier / TR = fast 継続の対岸横断)の表示のときだけ
+                // 取り込み、それ以外はアイドル www。
                 self.to_right_nex[c] = if self.mask[c - 1] {
                     self.to_right[c - 1]
                 } else if self.signal_only {
-                    config.external as u8
+                    let d = current[c - 1];
+                    if Some(d) == self.cb_state || Some(d) == self.tr_state {
+                        d
+                    } else {
+                        config.external as u8
+                    }
                 } else {
                     current[c - 1]
                 };
                 self.to_left_nex[c] = if self.signal_only && c > 1 && !self.mask[c - 1] {
-                    // 左口(I_i 右端セルの右入力)。FT の提示ステップの直後に
-                    // アイドルを FT2(解凍後位相)へ切り替え、以後 FT2 を保つ。
-                    // FT は流入口に直接注入されるので、値が口にあるステップ =
-                    // 提示ステップ。粘着性のため FT2 がすでに口にあれば維持する。
-                    let cur = self.to_left[c];
-                    if (self.ft2_state.is_some() && Some(cur) == self.ft_state)
-                        || self.ft2_state == Some(cur)
-                    {
-                        self.ft2_state.unwrap()
-                    } else if w.is_some() {
-                        w.unwrap()
+                    // 近位口(左隣が正常セル)。入来信号を提示に優先させる:
+                    // m >= 2 は右隣のストリーム中継、m == 1 は対岸の正常セルの
+                    // 表示からの遠位口 pickup(解凍信号 FT を運ぶ)。
+                    let inbound = if self.mask[c + 1] {
+                        self.to_left[c + 1]
                     } else {
-                        config.external as u8
+                        let d = current[c + 1];
+                        if Some(d) == self.ft_state {
+                            d
+                        } else {
+                            config.external as u8
+                        }
+                    };
+                    if inbound != config.external as u8 {
+                        inbound
+                    } else {
+                        // 左口(I_i 右端セルの右入力)。FT の提示ステップの直後に
+                        // アイドルを FT2(解凍後位相)へ切り替え、以後 FT2 を保つ。
+                        // FR2...FT が入来した後の FT2 粘着も同じロジックで効く。
+                        let cur = self.to_left[c];
+                        if (self.ft2_state.is_some() && Some(cur) == self.ft_state)
+                            || self.ft2_state == Some(cur)
+                        {
+                            self.ft2_state.unwrap()
+                        } else if w.is_some() {
+                            w.unwrap()
+                        } else {
+                            config.external as u8
+                        }
                     }
                 } else if self.mask[c + 1] {
                     self.to_left[c + 1]
                 } else if self.signal_only {
-                    config.external as u8
+                    // 遠位口 pickup(対岸の正常セルの表示から取り込む):
+                    // 左走行解凍信号 FT の到着を 1/1 で管路に乗せる。
+                    let d = current[c + 1];
+                    if Some(d) == self.ft_state {
+                        d
+                    } else {
+                        config.external as u8
+                    }
                 } else {
                     current[c + 1]
                 };

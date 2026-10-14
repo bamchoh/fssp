@@ -178,6 +178,12 @@ def add_a1():
     if 'FT2' not in names:
         states.append(f'{pad("FT2")}@101010,7090E0,others')
         names.append('FT2')
+    # TR: fast 継続信号の対岸横断状態。CB から管路 to_right に入った fast 信号を
+    # 未起床セル上で 1/1 で運ぶ(起床前のセルだけが保持できる=起床・choreography
+    # の前を必ず横断する)。壁で (TR,L,www) -> FT と 0 成本で折り返す。
+    if 'TR' not in names:
+        states.append(f'{pad("TR")}@101010,00CCAA,others')
+        names.append('TR')
     # CB: 境界Carrier(fast信号の管路引き渡し)。凍結起動トリガーのステップだけ
     # 境界セルが表示する。左隣からは F(held) と同じに見え、右側には信号を流す。
     if 'CB' not in names:
@@ -208,6 +214,36 @@ def add_a1():
         # CB の次状態: 凍結表示 F(L) へ(凍結窓の開始は t_i1+1 ではなく t_i1 の
         # ままにする: CB は同じステップ内の carrier として働く)
         (('C', 'CB', 'W'), 'FL'),
+        # fast 継続信号の対岸横断(規則層):
+        #   - 入口 pickup 経由で CB が対岸の左入力に現れると横断状態 TR に
+        #     (未起床セルのみ。L と www の相手を横断する)
+        #   - 配列右端(www と隣接)で 0 成本で解凍信号 FT に折り返す
+        #   - FT は左走行で未起床セルを戻り、管路遠位口 pickup で to_left に
+        #     乗せられて R_i の右入力に提示される(時刻式は往復 1/1 から自動一致)
+        #   - 波は 1 セル 1 ステップの提示で進み、すぐもとのアイドルに戻る
+        (('CB', 'L', 'L'), 'TR'),
+        (('CB', 'L', 'www'), 'FT'),  # 対岸が 1 セル区間: 受容と同時に折り返し
+        (('TR', 'L', 'L'), 'TR'),
+        (('TR', 'L', 'www'), 'FT'),
+        (('TR', 'L', 'W'), 'TR'),  # p>=2: 通過のまま次の管路の入口 pickup へ
+        # TR 波の通過セルの元のアイドル提示に戻る(左隣は管路 www か アイドル L、
+        # 右隣はアイドル L / TR 波 / 折り返し後の FT が見える)
+        (('L', 'TR', 'L'), 'L'),
+        (('www', 'TR', 'L'), 'L'),
+        (('L', 'TR', 'FT'), 'L'),
+        (('www', 'TR', 'FT'), 'L'),
+        # 折り返し FT の左走行波(未起床セル上)
+        (('www', 'L', 'FT'), 'FT'),
+        (('L', 'L', 'FT'), 'FT'),
+        (('L', 'FT', 'L'), 'L'),
+        (('www', 'FT', 'L'), 'L'),
+        (('L', 'FT', 'www'), 'L'),
+        # TR 波が右隣で通行しているセル(アイドル)は変化しない
+        (('www', 'L', 'TR'), 'L'),
+        (('L', 'L', 'TR'), 'L'),
+        # FT 波が左隣(すでに通行済み)にあるアイドルセルも変化しない
+        (('FT', 'L', 'www'), 'L'),
+        (('FT', 'L', 'L'), 'L'),
     ]
     n_added = 0
     for key, target in additions:
@@ -470,7 +506,29 @@ def a1_expected(gold1_c, gold2_c, n1, m1, n2):
                 row.append('L')
             else:
                 x2 = x - (n1 + m1)
-                row.append(gold2_c[t - T2][x2 - 1] if t >= T2 else 'L')
+                if n1 >= 2:
+                    # fast 継続信号の横断: TR 波は未起床セルを 1/1 で右へ
+                    # (CB@t_i1 → to_right pickup → 対岸提示 t_i1+m1+1 から)、
+                    # 折り返し後の波は左へ 1/1 で戻る。通行の提示はセルがまだ
+                    # アイドルの間だけ(起床後のシャトーには重ねられない=複合
+                    # carrier の増分は後段)。壁セル(x2 = n2)では通行と同等に
+                    # 折り返し FT だけを見える。
+                    fb = next((k for k, gr in enumerate(gold2_c)
+                               if gr[x2 - 1].strip() != 'L'), None)
+                    fb = fb if fb is not None else 10 ** 9
+                    t_tr = t1 + m1 + 1 + (x2 - 1)
+                    t_ft = t1 + m1 + n2 + (n2 - x2)
+                    if t == t_ft and t_ft <= T2 + fb:
+                        row.append('FT')
+                    elif t == t_tr and t_tr <= T2 + fb and x2 < n2:
+                        row.append('TR')
+                    elif t >= T2:
+                        row.append(gold2_c[t - T2][x2 - 1])
+                    else:
+                        row.append('L')
+                else:
+                    x2 = x - (n1 + m1)
+                    row.append(gold2_c[t - T2][x2 - 1] if t >= T2 else 'L')
         rows.append(row)
     return rows
 
