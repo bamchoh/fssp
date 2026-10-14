@@ -21,7 +21,7 @@ FT   @FFFFFF,00EEEE,others
 NG   @101010,808080,others
 general_number 1
 1,1
-rule_number 2686
+rule_number 2688
 A    ##A    ##A    ->A    
 A    ##A    ##L    ->A    
 A    ##A    ##Q    ->A    
@@ -2708,3 +2708,5 @@ FC   ##M    ##www  ->M
 NG   ##L    ##www  ->F    
 www  ##L    ##www  ->L    
 www  ##FM   ##FT   ->F    
+NG   ##L    ##FS   ->FL   
+www  ##FL   ##FT   ->F    

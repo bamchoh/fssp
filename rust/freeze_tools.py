@@ -177,6 +177,11 @@ def add_a1():
         # n1=1 の縮退区間: FS クランプ時の将軍が FM で凍結し、FT 到着=発火
         # (2n1-2 = 0 なので解凍そのものが射撃。非縮退では FT はセル1の入力に現れない)
         (('www', 'FM', 'FT'), 'F'),
+        # A2: 1 セルの中間区間は起動(NG, 左入力)と凍結(FS, 右入力)が同一ステップ
+        # に同時提示される(n_i >= 2 では FS が後発なのでこの組み合わせは出ない)
+        (('NG', 'L', 'FS'), 'FL'),
+        # A2: 1 セル中間区間の解凍=発火(凍結保持値は L、左入力は管路の www)
+        (('www', 'FL', 'FT'), 'F'),
     ]
     n_added = 0
     for key, target in additions:
@@ -513,7 +518,70 @@ def discover_a1():
     write_file(states, pre, post, emit(rulemap, list(rulemap.keys())))
 
 
+# ── A2 (p>=2) の配列配置列挙スイープ ──────────────────────────────────
+def sweep_a2():
+    # p=2: n=5..13 の全配置 (n_i >= m_i、区間は接触不許可=統合済み扱い)。
+    # p=3, p=4: 代表配置。期待 = SYNCED at 2n-2 (Theorem 3)。
+    import itertools
+
+    def a2_run(n, spec):
+        return run(BIN, ['-r', OUT_RULE, '-s', str(n), '-f', spec])
+
+    def check(n, spec, segs, fails):
+        fails[1] += 1
+        out = a2_run(n, spec)
+        if f'SYNCED (intact cells) at t={2 * n - 2}' not in out:
+            fails[0] += 1
+            print(f'FAIL n={n} -f {spec} (n/m={segs})')
+            for line in out.splitlines():
+                if 'SYNCED' in line or 'NOT' in line:
+                    print('   ', line.strip())
+        # A3 表示の有無を確認する(失敗でなく記録のみ)
+        return 'constraint n_i+m_i>=p-i (A3): FAIL' in out
+
+    fails = [0, 0]
+    a3_fail = 0
+    for n in range(5, 14):
+        for a1 in range(2, n - 1):
+            for b1 in range(a1, n - 1):
+                for a2 in range(b1 + 2, n):
+                    for b2 in range(a2, n):
+                        if b2 >= n:
+                            continue
+                        n1, m1 = a1 - 1, b1 - a1 + 1
+                        n2, m2 = a2 - b1 - 1, b2 - a2 + 1
+                        if n1 < m1 or n2 < m2:
+                            continue
+                        if check(n, f'{a1}-{b1},{a2}-{b2}',
+                                 f'{n1}/{m1},{n2}/{m2},{n - b2}', fails):
+                            a3_fail += 1
+    for (n, a1, b1, a2, b2, a3, b3) in [
+        (10, 4, 4, 6, 6, 8, 8),
+        (11, 4, 4, 6, 7, 9, 9),
+        (12, 4, 4, 7, 8, 10, 10),
+        (13, 5, 5, 7, 8, 10, 11),
+        (13, 6, 6, 8, 10, 12, 12),
+        (16, 5, 6, 8, 10, 12, 13),
+        (20, 7, 8, 11, 13, 16, 17),
+    ]:
+        n1, m1 = a1 - 1, b1 - a1 + 1
+        n2, m2 = a2 - b1 - 1, b2 - a2 + 1
+        n3, m3 = a3 - b2 - 1, b3 - a3 + 1
+        if min(n1 - m1, n2 - m2, n3 - m3) < 0 or a3 >= n:
+            continue
+        check(n, f'{a1}-{b1},{a2}-{b2},{a3}-{b3}',
+              f'{n1}/{m1},{n2}/{m2},{n3}/{m3},{n - b3}', fails)
+    # p=4 の代表配置
+    for (n, segs, spec) in [
+        (13, '3/1,1/1,1/1,2', '4-4,6-6,8-8'),
+        (13, '2/1,1/1,1/1,1,2', '3-3,5-5,7-7,9-9'),
+    ]:
+        check(n, spec, segs, fails)
+    print(f'A2 sweep: {fails[1]} layouts, {fails[0]} failures (A3-FAIL 内含 {a3_fail}, 発火は区別なし)')
+
+
 if __name__ == '__main__':
     cmd = sys.argv[1] if len(sys.argv) > 1 else 'verify'
     {'gen': gen, 'discover': discover, 'verify': verify, 'add_a1': add_a1,
-     'verify_a1': verify_a1, 'discover_a1': discover_a1}[cmd]()
+     'verify_a1': verify_a1, 'discover_a1': discover_a1,
+     'sweep_a2': sweep_a2}[cmd]()

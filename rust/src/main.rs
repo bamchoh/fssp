@@ -814,15 +814,16 @@ fn plan_a1_signals(analysis: &FaultAnalysis, config: &Config) -> (Vec<PlannedSig
         if let (Some(fs), Some(ft)) = (fs, ft) {
             let t_1i = t_i(i) + n_i - 1;
             let fs_time = if t_1i >= 1 { t_1i - 1 } else { t_i(i) };
+            // Δt_i = 2 m_i + 2 Σ_{j=i+1..p} (n_j + m_j) + 2 n_{p+1}
+            // Σ は I_i より後の I_{p+1} を除く全区間(正常/故障の別を問わず)。
             let delta = 2 * m_i
                 + 2 * analysis
                     .segments
                     .iter()
-                    .skip(2 * i + 1)
-                    .step_by(2)
+                    .take(2 * p)
+                    .skip(2 * i)
                     .map(|s| s.end - s.start + 1)
                     .sum::<usize>()
-                // Σ_{j=i+1..p}: D_{j} = 0-based の 2j-1(2i+1, 2i+3, ...)
                 + 2 * n_last;
             let t_2i = t_1i + delta;
             notes.push(format!(
