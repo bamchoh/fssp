@@ -769,7 +769,7 @@ fn find_state_index(config: &Config, name: &str) -> Option<u8> {
 //  I_i の解凍起動:     t_i2 = t_i1 + Δt_i
 // 信号は対応する故障区間 D の管路に流し込まれ、提示時刻(起動時刻の 1 ステップ前)
 // に近位口のルール入力へ現れる。
-fn plan_a1_signals(analysis: &FaultAnalysis, config: &Config) -> (Vec<PlannedSignal>, Vec<String>) {
+fn plan_a1_signals(analysis: &FaultAnalysis, config: &Config, a3: bool) -> (Vec<PlannedSignal>, Vec<String>) {
     let mut plan = vec![];
     let mut notes = vec![];
     let p = analysis.segments.iter().filter(|s| !s.intact).count();
@@ -793,6 +793,7 @@ fn plan_a1_signals(analysis: &FaultAnalysis, config: &Config) -> (Vec<PlannedSig
     let n_last = sizes[sizes.len() - 1];
 
     // I_i (1-based) = segments[2(i-1)]。t_i = 2 Σ_{j<i} (n_j + m_j)。
+    // A3 (Theorem 4): 起動は区間ごとに 1 ステップ遅れる (+ (i-1))。
     let t_i = |i: usize| -> usize {
         2 * analysis
             .segments
@@ -800,6 +801,7 @@ fn plan_a1_signals(analysis: &FaultAnalysis, config: &Config) -> (Vec<PlannedSig
             .take(2 * (i - 1))
             .map(|s| s.end - s.start + 1)
             .sum::<usize>()
+            + if a3 { i - 1 } else { 0 }
     };
 
     for i in 1..=p {
@@ -808,6 +810,7 @@ fn plan_a1_signals(analysis: &FaultAnalysis, config: &Config) -> (Vec<PlannedSig
         let n_i = analysis.segments[2 * i - 2].end - analysis.segments[2 * i - 2].start + 1;
         // Δt_i = 2 m_i + 2 Σ_{j=i+1..p} (n_j + m_j) + 2 n_{p+1}
         // (Σ は I_i より後の I_{p+1} を除く全区間の合計。論文 Thm.3 の式)
+        // A3 (Thm.4): 解凍信号の各区間横断の待ち分 (p - i + 1) をさらに加える。
         let delta = 2 * m_i
             + 2 * analysis
                 .segments
@@ -816,7 +819,8 @@ fn plan_a1_signals(analysis: &FaultAnalysis, config: &Config) -> (Vec<PlannedSig
                 .skip(2 * i)
                 .map(|s| s.end - s.start + 1)
                 .sum::<usize>()
-            + 2 * n_last;
+            + 2 * n_last
+            + if a3 { p - i + 1 } else { 0 };
         // 解凍信号 FT: t_i2 - 1 に管路の左口(= I_i 右端セルの右入力)へ直接注入。
         // 凍結起動 FS は n_i >= 2 の区間ではスケジューラを使わない: 区間の
         // own choreography の C 波が右端に到達する時刻(t_i + n_i - 1 = t_1i)が
@@ -1187,7 +1191,7 @@ fn validate_injections(injections: &[(Ctrl, usize, usize)], n: usize) -> Vec<(Ct
     injections.to_vec()
 }
 
-const USAGE: &str = "usage: fssp -r <rulefile> [-s size] [-f faults] [--inject ...] [--wallset ...] [-t steps] [--strict] [-d] [-c]";
+const USAGE: &str = "usage: fssp -r <rulefile> [-s size] [-f faults] [--a3] [--inject ...] [--wallset ...] [-t steps] [--strict] [-d] [-c]";
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -1211,6 +1215,7 @@ fn main() {
     let mut dump_mode = false;
     let mut color_mode = false;
     let mut strict_mode = false;
+    let mut a3_mode = false;
     let mut size_arg: Option<usize> = None;
     let mut rule_arg: Option<String> = None;
     let mut fault_arg: Option<String> = None;
@@ -1258,6 +1263,7 @@ fn main() {
                 dump_mode = true;
             }
             "--strict" => strict_mode = true,
+            "--a3" => a3_mode = true,
             "-r" | "--rule" | "-s" | "--size" | "-f" | "--fault" | "--inject" | "--wallset" | "-t" | "--steps" => {
                 i += 1;
                 let value = match args.get(i) {
@@ -1416,16 +1422,23 @@ fn main() {
                 println!("cells: {}, defective: {}", cell_size, def_str.join(","));
 
                 let analysis = analyze_faults(&fault, cell_size);
-                let (fail_a1a2, _) = report_faults(&analysis);
+                let (fail_a1a2, fail_a3c) = report_faults(&analysis);
 
                 if !fail_a1a2.is_empty() {
                     eprintln!(
                         "warning: fault layout violates n_i>=m_i; sync guarantee of Umeo A1/A2 does not apply"
                     );
-                    if strict_mode {
-                        eprintln!("--strict: refusing to run");
-                        std::process::exit(1);
-                    }
+                }
+                if a3_mode && !fail_a3c.is_empty() {
+                    eprintln!(
+                        "warning: layout violates n_i+m_i>=p-i (Umeo A3 condition, Theorem 4); A3 sync guarantee does not apply"
+                    );
+                }
+                if strict_mode
+                    && (!fail_a1a2.is_empty() || (a3_mode && !fail_a3c.is_empty()))
+                {
+                    eprintln!("--strict: refusing to run");
+                    std::process::exit(1);
                 }
                 Some(analysis)
             }
@@ -1447,7 +1460,7 @@ fn main() {
         // A1/A2 の信号スケジュールを区間構造から組み立てる
         let signals: Vec<PlannedSignal> = match &analysis {
             Some(a) if signal_only => {
-                let (plan, notes) = plan_a1_signals(a, &config);
+                let (plan, notes) = plan_a1_signals(a, &config, a3_mode);
                 for note in &notes {
                     println!("a1: {}", note);
                 }
@@ -1471,7 +1484,16 @@ fn main() {
             })
             .collect();
 
-        let base_cap = (cell_size << 1) - 2;
+        let seg_count = analysis
+            .as_ref()
+            .map(|a| a.segments.iter().filter(|s| !s.intact).count())
+            .unwrap_or(0);
+        let base_cap = if a3_mode {
+            // A3 の同期時刻は 2n-2+p (Theorem 4)
+            (cell_size << 1) - 2 + seg_count
+        } else {
+            (cell_size << 1) - 2
+        };
         let max_t = injections
             .iter()
             .map(|&(_, _, t)| t)

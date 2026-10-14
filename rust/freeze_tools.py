@@ -616,8 +616,159 @@ def sweep_a2():
     print(f'A2 sweep: {fails[1]} layouts, {fails[0]} failures (A3-FAIL 内含 {a3_fail}, 発火は区別なし)')
 
 
+# ── A2/A3 の区間一般での検証(スケジュール式に対応した期待配置) ──────────
+# sizes = [n1, m1, n2, m2, ..., n_{p+1}] (I と D の交互)。a3 フラグで
+#   A2 (Thm.3): t_i = 2Σ_{j<i}(n_j+m_j)、Δt_i = 2m_i+2Σ_{j>i}(n_j+m_j)+2n_{p+1}
+#   A3 (Thm.4): t_i = 2Σ_{j<i}(...)+(i-1)、Δt_i = 上式 + (p-i+1)
+# 各 I_i は t_{i1} = t_i + n_i - 1 から Δt_i 行凍結。I_{p+1} は t_i 起動・無凍結。
+def seg_mode_cases():
+    return [
+        (a3, n, spec, sizes)
+        for (a3, n, spec, sizes) in [
+            (True, 10, '4,7', [3, 1, 2, 1, 3]),
+            (False, 10, '4,7', [3, 1, 2, 1, 3]),
+            (True, 13, '5-6,9-9', [4, 2, 2, 1, 4]),
+            (True, 13, '5-6,9-10', [4, 2, 2, 2, 3]),
+            (True, 16, '5-6,9-10,13-13', [4, 2, 2, 2, 2, 1, 3]),
+            (True, 20, '7-8,11-13', [6, 2, 2, 3, 7]),
+        ]
+    ]
+
+
+def seg_expected(a3, sizes, golds):
+    n = sum(sizes)
+    p = (len(sizes) - 1) // 2
+
+    def t_i(i):
+        s = 2 * sum(sizes[0:2 * (i - 1)])
+        if a3:
+            s += i - 1
+        return s
+
+    def delta(i):
+        d = 2 * sizes[2 * i - 1] + 2 * sum(sizes[2 * i:2 * p]) + 2 * sizes[-1]
+        if a3:
+            d += p - i + 1
+        return d
+
+    # セル番号 → (区間種, 区間番号, 区間内座標)
+    pos = []
+    x = 1
+    for k, sz in enumerate(sizes):
+        intact = k % 2 == 0
+        idx = k // 2 + 1
+        for _ in range(sz):
+            if intact:
+                pos.append(('I', idx, x))
+            else:
+                pos.append(('D', idx, x))
+            x += 1
+
+    rows = []
+    fire_t = 2 * n - 2 + (p if a3 else 0)
+    for t in range(0, fire_t + 1):
+        row = []
+        for (kind, idx, seg_x) in pos:
+            if kind == 'D':
+                row.append('L')
+            else:
+                seg_start = sum(sizes[0:2 * (idx - 1)]) + 1
+                j = seg_x - seg_start + 1  # 区間内座標 (1 起点)
+                n_seg = sizes[2 * idx - 2]
+                t_st = t_i(idx)
+                g = golds[idx - 1]
+                if idx <= p:
+                    # f = t_i1 + (n_i - j): セル j の凍結表示開始時刻
+                    f_ = t_st + n_seg - 1 + (n_seg - j)
+                    dd = delta(idx)
+                    if t < t_st:
+                        row.append('L')
+                    elif t < f_:
+                        row.append(g[t - t_st][j - 1])
+                    elif t < f_ + dd:
+                        held = ('L' if f_ - 1 - t_st < 0
+                                else g[f_ - 1 - t_st][j - 1])
+                        row.append('F' + held)
+                    else:
+                        row.append(g[t - dd - t_st][j - 1])
+                else:
+                    if t < t_st:
+                        row.append('L')
+                    else:
+                        row.append(g[t - t_st][j - 1])
+        rows.append(row)
+    return rows
+
+
+def verify_seg(a3_only=False):
+    ok = True
+    for (a3, n, spec, sizes) in seg_mode_cases():
+        if a3_only and not a3:
+            continue
+        p = (len(sizes) - 1) // 2
+        golds = [[cells(r) for r in golden_rows(sz)]
+                 for idx_i, sz in [(k, sizes[k]) for k in range(0, len(sizes), 2)]]
+        flag = ['--a3'] if a3 else []
+        act = state_rows(run(BIN, ['-r', OUT_RULE, '-s', str(n), '-d', '-f', spec] + flag))
+        exp = seg_expected(a3, sizes, golds)
+        bad = 0
+        for t, row in enumerate(act):
+            if t >= len(exp):
+                bad += 1
+                continue
+            ac, ec = cells(row), exp[t]
+            for a, e in zip(ac, ec):
+                if a.strip() != e.strip():
+                    bad += 1
+        want = 2 * n - 2 + (p if a3 else 0) + 1
+        fire_ok = len(act) == want
+        status = 'OK' if (bad == 0 and fire_ok) else 'NG'
+        if status == 'NG':
+            ok = False
+        mode = 'A3' if a3 else 'A2'
+        print(f'{mode} n={n} f={spec}: {status} (mismatched={bad}, '
+              f'fire={len(act) - 1} want={want - 1})')
+    print('ALL OK' if ok else 'FAILURES PRESENT')
+
+
+def sweep_a3():
+    # A3 条件 (n_i >= m_i かつ n_i + m_i >= p - i) を満たす p>=1 配置の列挙。
+    # 期待 = SYNCED at 2n-2+p。
+    import itertools
+    total = fails = 0
+    for n in range(5, 15):
+        for a1 in range(2, n - 1):
+            for b1 in range(a1, n - 1):
+                for a2 in range(b1 + 2, n):
+                    for b2 in range(a2, n):
+                        if b2 >= n:
+                            continue
+                        segs = [(1, a1 - 1), (a1, b1), (b1 + 1, a2 - 1), (a2, b2), (b2 + 1, n)]
+                        sizes = [s[1] - s[0] + 1 for s in segs]
+                        if sizes[0] < 1 or sizes[-1] < 1:
+                            continue
+                        ok_c = True
+                        p = 2
+                        for j in (1, 2):  # D_j は sizes の 2j、その左の I は 2j-2
+                            n_j, m_j = sizes[2 * j - 2], sizes[2 * j - 1]
+                            # A3 条件: n_i >= m_i かつ n_i + m_i >= p - i
+                            if n_j < m_j or n_j + m_j < p - j:
+                                ok_c = False
+                        if not ok_c:
+                            continue
+                        total += 1
+                        out = run(BIN, [
+                            '-r', OUT_RULE, '-s', str(n),
+                            '-f', f'{a1}-{b1},{a2}-{b2}', '--a3'])
+                        if f'SYNCED (intact cells) at t={2 * n - 2 + 2}' not in out:
+                            fails += 1
+                            print(f'FAIL n={n} -f {a1}-{b1},{a2}-{b2} (sizes={sizes})')
+    print(f'A3 sweep: {total} layouts, {fails} failures')
+
+
 if __name__ == '__main__':
     cmd = sys.argv[1] if len(sys.argv) > 1 else 'verify'
     {'gen': gen, 'discover': discover, 'verify': verify, 'add_a1': add_a1,
      'verify_a1': verify_a1, 'discover_a1': discover_a1,
-     'sweep_a2': sweep_a2}[cmd]()
+     'sweep_a2': sweep_a2, 'verify_seg': verify_seg,
+     'sweep_a3': sweep_a3}[cmd]()
