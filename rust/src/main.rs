@@ -25,9 +25,9 @@ struct Config {
     soldier: usize,
     firing: usize,
     external: usize,
-    // 5 ビット/次元のインデックス (l<<10)+(c<<5)+r。状態数最大 32(凍結層で
-    // 18 状態になるため 16 状態上限の旧 4 ビット表現から拡張)。
-    rules: [u8; 32768],
+    // 6 ビット/次元のインデックス (l<<12)+(c<<6)+r。状態数最大 64(凍結層の
+    // 複合状態(凍結変状態+横断信号)のために 32 状態上限の 5 ビット表現から拡張)。
+    rules: [u8; 262144],
 }
 
 fn dump_full(cells: &[u8], config: &Config) {
@@ -99,14 +99,14 @@ fn calc_next(next_cells: &mut [u8], idx: usize, current: &[u8], config: &Config)
 }
 
 fn nextcell(left: u8, center: u8, right: u8, config: &Config) -> u8 {
-    config.rules[((left as usize) << 10) + ((center as usize) << 5) + (right as usize)]
+    config.rules[((left as usize) << 12) + ((center as usize) << 6) + (right as usize)]
 }
 
 fn nextline(cur: &mut [u8], nex: &mut [u8], config: &Config) {
     calc_next(nex, 1, cur, config);
 }
 
-// AVX2 gather パス。u8 表(32768)をバイトオフセットで参照し、
+// AVX2 gather パス。u8 表(262144 = 256KB)をバイトオフセットで参照し、
 // gathered dword の下位 1 バイトを状態として回収する。
 #[cfg(target_arch = "x86_64")]
 mod simd {
@@ -144,13 +144,13 @@ mod simd {
             let rlo = _mm256_unpacklo_epi8(r, zp);
             let rhi = _mm256_unpackhi_epi8(r, zp);
 
-            // idx16 = (l<<10) + (c<<5) + r
+            // idx16 = (l<<12) + (c<<6) + r
             let ilo = _mm256_add_epi16(
-                _mm256_add_epi16(_mm256_slli_epi16(llo, 10), _mm256_slli_epi16(clo, 5)),
+                _mm256_add_epi16(_mm256_slli_epi16(llo, 12), _mm256_slli_epi16(clo, 6)),
                 rlo,
             );
             let ihi = _mm256_add_epi16(
-                _mm256_add_epi16(_mm256_slli_epi16(lhi, 10), _mm256_slli_epi16(chi, 5)),
+                _mm256_add_epi16(_mm256_slli_epi16(lhi, 12), _mm256_slli_epi16(chi, 6)),
                 rhi,
             );
 
@@ -211,8 +211,8 @@ mod simd {
         }
         // 端数はスカラーで
         while i < last {
-            nex[i] = rules[((cur[i - 1] as usize) << 10)
-                + ((cur[i] as usize) << 5)
+            nex[i] = rules[((cur[i - 1] as usize) << 12)
+                + ((cur[i] as usize) << 6)
                 + (cur[i + 1] as usize)];
             i += 1;
         }
@@ -284,7 +284,7 @@ fn parse_rules(line: &str, n: i32, states: &Vec<State>) -> (ParseState, usize, u
     for rule_state in vv {
         for (i, state) in states.iter().enumerate() {
             if rule_state == state.name.as_str() {
-                idx = (idx << 5) + i;
+                idx = (idx << 6) + i;
                 break;
             }
         }
@@ -309,7 +309,7 @@ fn parse_rule_file(s: &String) -> Config {
     let mut parse_state = ParseState::Begin;
     let mut config = Config {
         states: vec![],
-        rules: [0; 32768],
+        rules: [0; 262144],
         general: 0,
         soldier: 0,
         firing: 0,
@@ -1023,7 +1023,7 @@ impl FaultField {
                 next_cells[c] = if self.frozen[c] {
                     current[c] // 凍結: 状態変化を止めて保持
                 } else {
-                    config.rules[((left as usize) << 10) + ((current[c] as usize) << 5) + (right as usize)]
+                    config.rules[((left as usize) << 12) + ((current[c] as usize) << 6) + (right as usize)]
                 };
             }
         }
@@ -1594,14 +1594,14 @@ mod tests {
             st("S", ""),
             st("G", "general"),
         ];
-        let mut rules = [0u8; 32768];
+        let mut rules = [0u8; 262144];
         for l in 0u8..4 {
             for r in 0u8..4 {
                 // 中心 Q: 隣に S がいれば S になる(両方向 1/1 進行)、いなければ Q
-                rules[((l as usize) << 10) + (1 << 5) + (r as usize)] =
+                rules[((l as usize) << 12) + (1 << 6) + (r as usize)] =
                     if l == 2 || r == 2 { 2 } else { 1 };
                 // 中心 S: 発信して Q に戻る
-                rules[((l as usize) << 10) + (2 << 5) + (r as usize)] = 1;
+                rules[((l as usize) << 12) + (2 << 6) + (r as usize)] = 1;
             }
         }
         Config {
