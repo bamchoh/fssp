@@ -631,6 +631,7 @@ def seg_mode_cases():
             (True, 13, '5-6,9-10', [4, 2, 2, 2, 3]),
             (True, 16, '5-6,9-10,13-13', [4, 2, 2, 2, 2, 1, 3]),
             (True, 20, '7-8,11-13', [6, 2, 2, 3, 7]),
+            (True, 13, '3,7,11', [2, 1, 3, 1, 3, 1, 2]),
         ]
     ]
 
@@ -763,7 +764,36 @@ def sweep_a3():
                         if f'SYNCED (intact cells) at t={2 * n - 2 + 2}' not in out:
                             fails += 1
                             print(f'FAIL n={n} -f {a1}-{b1},{a2}-{b2} (sizes={sizes})')
-    print(f'A3 sweep: {total} layouts, {fails} failures')
+    # p=3: 全配置列挙 (n=8..14, n_i >= m_i で A3 条件は p<=3 では自明)。
+    for n in range(8, 15):
+        for a1 in range(2, n - 3):
+            for b1 in range(a1, n - 3):
+                for a2 in range(b1 + 2, n - 1):
+                    for b2 in range(a2, n - 1):
+                        for a3b in range(b2 + 2, n):
+                            for b3 in range(a3b, n):
+                                if b3 >= n:
+                                    continue
+                                segs = [(1, a1 - 1), (a1, b1),
+                                        (b1 + 1, a2 - 1), (a2, b2),
+                                        (b2 + 1, a3b - 1), (a3b, b3),
+                                        (b3 + 1, n)]
+                                sizes = [s[1] - s[0] + 1 for s in segs]
+                                if sizes[0] < 1 or sizes[-1] < 1:
+                                    continue
+                                if any(sizes[2 * j - 2] < sizes[2 * j - 1]
+                                       for j in (1, 2, 3)):
+                                    continue
+                                total += 1
+                                spec3 = (f'{a1}-{b1},{a2}-{b2},'
+                                         + (f'{a3b}' if a3b == b3 else f'{a3b}-{b3}'))
+                                out = run(BIN, [
+                                    '-r', OUT_RULE, '-s', str(n),
+                                    '-f', spec3, '--a3'])
+                                if f'SYNCED (intact cells) at t={2 * n - 2 + 3}' not in out:
+                                    fails += 1
+                                    print(f'FAIL p3 n={n} -f {spec3} (sizes={sizes})')
+    print(f'A3 sweep: {total} layouts, {fails} failures (p=2 + p=3)')
 
 
 if __name__ == '__main__':
