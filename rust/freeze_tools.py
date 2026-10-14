@@ -178,6 +178,11 @@ def add_a1():
     if 'FT2' not in names:
         states.append(f'{pad("FT2")}@101010,7090E0,others')
         names.append('FT2')
+    # CB: 境界Carrier(fast信号の管路引き渡し)。凍結起動トリガーのステップだけ
+    # 境界セルが表示する。左隣からは F(held) と同じに見え、右側には信号を流す。
+    if 'CB' not in names:
+        states.append(f'{pad("CB")}@101010,0088CC,others')
+        names.append('CB')
     additions = [
         (('www', 'L', 'L'), 'L'),    # 区間左端のアイドル(balzer の www 規則にはない)
         (('www', 'L', 'www'), 'L'),  # 1 セル区間(右端)のアイドル
@@ -195,10 +200,14 @@ def add_a1():
         (('www', 'FL', 'FT'), 'F'),
         # 凍結起動トリガー: 区間の自らの構成の C 波が右端に到達したステップで
         # 壁反射の代わりに凍結に移る。トリガーはこのステップだけ使われる。
+        # トリガーの遷移先は CB(= F(held) + fast信号の継続を担う境界Carrier)。
         (('L', 'L', 'W'), 'L'),
-        (('C', 'L', 'W'), 'FL'),
+        (('C', 'L', 'W'), 'CB'),
         # 区間の長さが 2 のときは C 波の最初の到達セルの左隣が M
-        (('M', 'L', 'W'), 'FL'),
+        (('M', 'L', 'W'), 'CB'),
+        # CB の次状態: 凍結表示 F(L) へ(凍結窓の開始は t_i1+1 ではなく t_i1 の
+        # ままにする: CB は同じステップ内の carrier として働く)
+        (('C', 'CB', 'W'), 'FL'),
     ]
     n_added = 0
     for key, target in additions:
@@ -216,6 +225,15 @@ def add_a1():
             if rulemap.get(new_key) != rulemap[key]:
                 rulemap[new_key] = rulemap[key]
                 n_hold_w += 1
+    # 境界Carrier CB: セルが CB を表示している間、その左(凍結側)のルールは
+    # これを F(L)=FL と同じに扱う。(x, FL, r) -> y の規則を (x, CB, r) にも複製。
+    cb_copies = 0
+    for key in list(rulemap.keys()):
+        if key[1] == 'FL':
+            new_key = (key[0], 'CB', key[2])
+            if rulemap.get(new_key) != rulemap[key]:
+                rulemap[new_key] = rulemap[key]
+                cb_copies += 1
     # 解凍後位相 FT2: (x, a, www) -> y の規則を (x, a, FT2) -> y にも複製する。
     # FT2 は右端の管路だけが提示するので、境界セル以外の既存規則には影響しない。
     ft2_copies = 0
@@ -228,7 +246,7 @@ def add_a1():
     ordered = emit(rulemap, list(rulemap.keys()))
     write_file(states, pre, post, ordered)
     print(f'add_a1: states={len(states)} rules={len(ordered)} '
-          f'(+{n_added}+{n_hold_w}W-hold+{ft2_copies}FT2)')
+          f'(+{n_added}+{n_hold_w}W-hold+{ft2_copies}FT2+{cb_copies}CB)')
 
 
 def run(binary, args):
@@ -436,7 +454,10 @@ def a1_expected(gold1_c, gold2_c, n1, m1, n2):
                 if t < f_:
                     row.append(gold1_c[t][x - 1])
                 elif t < f_ + dt:
-                    row.append('F' + gold1_c[f_ - 1][x - 1])
+                    if x == n1 and t == f_ and n1 >= 2:
+                        row.append('CB')  # 境界の1ステップCarrier
+                    else:
+                        row.append('F' + gold1_c[f_ - 1][x - 1])
                 else:
                     row.append(gold1_c[t - dt][x - 1])
             elif x <= n1 + m1:
@@ -687,9 +708,12 @@ def seg_expected(a3, sizes, golds):
                     elif t < f_:
                         row.append(g[t - t_st][j - 1])
                     elif t < f_ + dd:
-                        held = ('L' if f_ - 1 - t_st < 0
-                                else g[f_ - 1 - t_st][j - 1])
-                        row.append('F' + held)
+                        if j == n_seg and t == f_ and n_seg >= 2:
+                            row.append('CB')  # 境界の1ステップCarrier
+                        else:
+                            held = ('L' if f_ - 1 - t_st < 0
+                                    else g[f_ - 1 - t_st][j - 1])
+                            row.append('F' + held)
                     else:
                         row.append(g[t - dd - t_st][j - 1])
                 else:
