@@ -226,11 +226,17 @@ def add_a1():
                 rulemap[new_key] = rulemap[key]
                 n_hold_w += 1
     # 境界Carrier CB: セルが CB を表示している間、その左(凍結側)のルールは
-    # これを F(L)=FL と同じに扱う。(x, FL, r) -> y の規則を (x, CB, r) にも複製。
+    # これを F(L)=FL と同じに扱う。(x, FL, r) -> y を (x, CB, r) に、
+    # (l, c, FL) -> y を (l, c, CB) に複製(CB は FL と同じ機械として振る舞い、
+    # 加えて fast 信号の管路引き渡しを担う)。
     cb_copies = 0
     for key in list(rulemap.keys()):
-        if key[1] == 'FL':
-            new_key = (key[0], 'CB', key[2])
+        for slot, old_val in [(1, 'FL'), (2, 'FL')]:
+            if key[slot] != old_val:
+                continue
+            nk = list(key)
+            nk[slot] = 'CB'
+            new_key = tuple(nk)
             if rulemap.get(new_key) != rulemap[key]:
                 rulemap[new_key] = rulemap[key]
                 cb_copies += 1
