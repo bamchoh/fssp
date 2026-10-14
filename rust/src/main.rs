@@ -806,39 +806,57 @@ fn plan_a1_signals(analysis: &FaultAnalysis, config: &Config) -> (Vec<PlannedSig
         let d = &analysis.segments[2 * i - 1]; // D_i
         let m_i = d.end - d.start + 1;
         let n_i = analysis.segments[2 * i - 2].end - analysis.segments[2 * i - 2].start + 1;
-        // 凍結/解凍信号は I_i の右端の境界で生成される(論文: I1 の右端での反射
-        // 信号)。管路の左口(= I_i 右端セルの右入力)に直接注入し、提示時刻に
-        // ちょうど 1 ステップだけ見せる。FS の提示時刻は t_1i の 1 ステップ前。
-        // n_i = 1 の縮退区間は t_1i = t_i なので t_i にクランプする(将軍が
-        // (www, M, FS) -> FM で凍結する)。
-        if let (Some(fs), Some(ft)) = (fs, ft) {
-            let t_1i = t_i(i) + n_i - 1;
-            let fs_time = if t_1i >= 1 { t_1i - 1 } else { t_i(i) };
-            // Δt_i = 2 m_i + 2 Σ_{j=i+1..p} (n_j + m_j) + 2 n_{p+1}
-            // Σ は I_i より後の I_{p+1} を除く全区間(正常/故障の別を問わず)。
-            let delta = 2 * m_i
-                + 2 * analysis
-                    .segments
-                    .iter()
-                    .take(2 * p)
-                    .skip(2 * i)
-                    .map(|s| s.end - s.start + 1)
-                    .sum::<usize>()
-                + 2 * n_last;
-            let t_2i = t_1i + delta;
-            notes.push(format!(
-                "I{} frozen Δt={} (FS at t={}, FT at t={})",
-                i,
-                delta,
-                fs_time,
-                t_2i - 1
-            ));
-            plan.push(PlannedSignal {
-                time: fs_time,
-                cell: d.start,
-                to_left: true,
-                value: fs,
-            });
+        // Δt_i = 2 m_i + 2 Σ_{j=i+1..p} (n_j + m_j) + 2 n_{p+1}
+        // (Σ は I_i より後の I_{p+1} を除く全区間の合計。論文 Thm.3 の式)
+        let delta = 2 * m_i
+            + 2 * analysis
+                .segments
+                .iter()
+                .take(2 * p)
+                .skip(2 * i)
+                .map(|s| s.end - s.start + 1)
+                .sum::<usize>()
+            + 2 * n_last;
+        // 解凍信号 FT: t_i2 - 1 に管路の左口(= I_i 右端セルの右入力)へ直接注入。
+        // 凍結起動 FS は n_i >= 2 の区間ではスケジューラを使わない: 区間の
+        // own choreography の C 波が右端に到達する時刻(t_i + n_i - 1 = t_1i)が
+        // 凍結起動そのもの = 論文の「反射信号が t_1i に I1 の右端で凍結を起動」。
+        // ルール層のトリガーは (C, L, W) -> FL(W = 管路の境界マーカー提示)。
+        // n_i = 1 の縮退区間だけ FS を残す(C 波が存在しないので t_i にクランプ
+        // 注入し、将軍が (www, M, FS) -> FM で凍結する)。
+        let t_1i = t_i(i) + n_i - 1;
+        let t_2i = t_1i + delta;
+        if let Some(ft) = ft {
+            if n_i >= 2 {
+                notes.push(format!(
+                    "I{} frozen Δt={} (freeze via boundary reflection at t={}, FT at t={})",
+                    i,
+                    delta,
+                    t_1i,
+                    t_2i - 1
+                ));
+            } else {
+                notes.push(format!(
+                    "I{} frozen Δt={} (FS injected at t={}, FT at t={})",
+                    i,
+                    delta,
+                    if t_1i == 0 { 0 } else { t_1i - 1 },
+                    t_2i - 1
+                ));
+            }
+            // n_i = 1 の縮退区間だけ FS を残す(C 波が存在しない: i=1 では t_1i =
+            // 0 をクランプ、i>=2 では t_1i = t_i なので通常の 1 ステップ前)。
+            if n_i == 1 {
+                if let Some(fs) = fs {
+                    let fs_time = if t_1i == 0 { 0 } else { t_1i - 1 };
+                    plan.push(PlannedSignal {
+                        time: fs_time,
+                        cell: d.start,
+                        to_left: true,
+                        value: fs,
+                    });
+                }
+            }
             plan.push(PlannedSignal {
                 time: t_2i - 1,
                 cell: d.start,
@@ -871,8 +889,12 @@ struct FaultField {
     to_right_nex: Vec<u8>,
     to_left_nex: Vec<u8>,
     ctrl_nex: Vec<Ctrl>,
-    // A1 モード: 管路は信号だけを運び、アイドル時は www を提示する
+    // A1 モード: 管路は信号だけを運び、アイドル時は境界マーカーを提示する
     signal_only: bool,
+    // 信号状態の番号。ルールファイルに無ければ None(www にフォールバック)
+    w_state: Option<u8>,  // R→L 管路のアイドル提示(解凍前の境界マーカー)
+    ft_state: Option<u8>, // 解凍信号
+    ft2_state: Option<u8>, // 解凍後のアイドル提示(σ 線上の壁反射と凍結起動の区別)
 }
 
 impl FaultField {
@@ -882,23 +904,29 @@ impl FaultField {
 
     fn new(mask: &[bool], config: &Config, signal_only: bool) -> FaultField {
         let n = mask.len() - 2;
-        // 信号層のアイドル値は外側の壁と同じ www (区間の境界は無信号のとき
-        // 壁と同じ提示をする)。オラクルモードでは旧来の soldier で満たす。
-        let idle = if signal_only {
-            config.external as u8
-        } else {
-            config.soldier as u8
-        };
+        let w_state = find_state_index(config, "W");
+        let ft_state = find_state_index(config, "FT");
+        let ft2_state = find_state_index(config, "FT2");
+        // 信号層のアイドル値。R→L 管路(I_i 右端セルの右入力)は境界マーカー W
+        // を提示する(www だと凍結起動と素の壁反射 (C,L,www)->M が区別できず衝突)。
+        // 解凍信号 FT が口を通過した後は FT2(解凍後位相)に切り替わる。
+        // L→R 管路(次の区間 I_{i+1} 左端セルの左入力)は www(将軍の boundary
+        // 規則 (www,M,*) がそのまま働く)。ルールファイルに W がなければ www。
+        let idle_to_right = config.external as u8;
+        let idle_to_left = if signal_only { w_state.unwrap_or(config.external as u8) } else { config.soldier as u8 };
         let mut field = FaultField {
             mask: mask.to_vec(),
-            to_right: vec![idle; n + 2],
-            to_left: vec![idle; n + 2],
+            to_right: vec![idle_to_right; n + 2],
+            to_left: vec![idle_to_left; n + 2],
             ctrl: vec![Ctrl::None; n + 2],
             frozen: vec![false; n + 2],
-            to_right_nex: vec![idle; n + 2],
-            to_left_nex: vec![idle; n + 2],
+            to_right_nex: vec![idle_to_right; n + 2],
+            to_left_nex: vec![idle_to_left; n + 2],
             ctrl_nex: vec![Ctrl::None; n + 2],
             signal_only,
+            w_state,
+            ft_state,
+            ft2_state,
         };
         // 壁は故障ではない
         field.mask[0] = false;
@@ -942,6 +970,7 @@ impl FaultField {
                 // 現在状態。A1 モードでは管路は信号だけを運ぶ: 流入口(隣が正常の
                 // 場所)では計画された注入信号を取り込み、それ以外は www を充填する
                 // (管からセル状態の生値を取り込まない)。
+                let w = self.w_state;
                 self.to_right_nex[c] = if self.mask[c - 1] {
                     self.to_right[c - 1]
                 } else if self.signal_only {
@@ -949,7 +978,22 @@ impl FaultField {
                 } else {
                     current[c - 1]
                 };
-                self.to_left_nex[c] = if self.mask[c + 1] {
+                self.to_left_nex[c] = if self.signal_only && c > 1 && !self.mask[c - 1] {
+                    // 左口(I_i 右端セルの右入力)。FT の提示ステップの直後に
+                    // アイドルを FT2(解凍後位相)へ切り替え、以後 FT2 を保つ。
+                    // FT は流入口に直接注入されるので、値が口にあるステップ =
+                    // 提示ステップ。粘着性のため FT2 がすでに口にあれば維持する。
+                    let cur = self.to_left[c];
+                    if (self.ft2_state.is_some() && Some(cur) == self.ft_state)
+                        || self.ft2_state == Some(cur)
+                    {
+                        self.ft2_state.unwrap()
+                    } else if w.is_some() {
+                        w.unwrap()
+                    } else {
+                        config.external as u8
+                    }
+                } else if self.mask[c + 1] {
                     self.to_left[c + 1]
                 } else if self.signal_only {
                     config.external as u8

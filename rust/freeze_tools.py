@@ -160,18 +160,29 @@ def gen():
 
 
 def add_a1():
-    # A1 接続用の付加: 将軍起動信号 NG とその受容規則 + 管路アイドル提示 www の
-    # 兵士規則。既存の発見規則を保持したまま追記する(regen/discard はしない)。
+    # A1/A2 接続用の付加。既存の発見規則を保持したまま追記する(regen はしない)。
+    # - NG: 将軍起動信号(管路が I_{i+1} 左端の左入力に提示)
+    # - W : 管路の境界マーカー(R→L 管路のアイドル提示。www と別の状態にして
+    #       凍結起動トリガー (C,L,W)->FL を素の壁反射 (C,L,www)->M と区別する)
+    # - FT2: 解凍後位相のアイドル提示(凍結を経た区間の右端では、σ 線上の
+    #       壁反射 (C,L,FT2)->M は初回の凍結起動と区別されて正しく再発火する)
     states, rules, pre, post = load(OUT_RULE)
     rulemap = parse_rules(rules)
     names = [state_name(s) for s in states]
     if 'NG' not in names:
         states.append(f'{pad("NG")}@101010,808080,others')
         names.append('NG')
+    if 'W' not in names:
+        states.append(f'{pad("W")}@101010,404860,others')
+        names.append('W')
+    if 'FT2' not in names:
+        states.append(f'{pad("FT2")}@101010,7090E0,others')
+        names.append('FT2')
     additions = [
-        (('www', 'L', 'L'), 'L'),   # 区間左端のアイドル(balzer の www 規則にはない)
-        (('www', 'L', 'www'), 'L'), # 1 セル区間(右端)のアイドル
-        (('NG', 'L', 'L'), 'M'),    # 管路の将軍起動信号提示でセルを M へ
+        (('www', 'L', 'L'), 'L'),    # 区間左端のアイドル(balzer の www 規則にはない)
+        (('www', 'L', 'www'), 'L'),  # 1 セル区間(右端)のアイドル
+        (('www', 'L', 'W'), 'L',),   # 1 セル中間区間のアイドル(左=www、右=管路 W)
+        (('NG', 'L', 'L'), 'M'),     # 管路の将軍起動信号提示でセルを M へ
         # 起動区間が右端(長さ1)の場合は起動=発火((NG, L, www) のみが目印)
         (('NG', 'L', 'www'), 'F'),
         # n1=1 の縮退区間: FS クランプ時の将軍が FM で凍結し、FT 到着=発火
@@ -182,6 +193,12 @@ def add_a1():
         (('NG', 'L', 'FS'), 'FL'),
         # A2: 1 セル中間区間の解凍=発火(凍結保持値は L、左入力は管路の www)
         (('www', 'FL', 'FT'), 'F'),
+        # 凍結起動トリガー: 区間の自らの構成の C 波が右端に到達したステップで
+        # 壁反射の代わりに凍結に移る。トリガーはこのステップだけ使われる。
+        (('L', 'L', 'W'), 'L'),
+        (('C', 'L', 'W'), 'FL'),
+        # 区間の長さが 2 のときは C 波の最初の到達セルの左隣が M
+        (('M', 'L', 'W'), 'FL'),
     ]
     n_added = 0
     for key, target in additions:
@@ -190,9 +207,28 @@ def add_a1():
                 print(f'  override {key}: {rulemap[key]} -> {target}')
             rulemap[key] = target
             n_added += 1
+    # 凍結ホールドの W 版: (x, F_v, www) -> F_v の規則を (x, F_v, W) にも複製する
+    n_hold_w = 0
+    for key in list(rulemap.keys()):
+        if (key[2] == 'www' and len(key[1]) == 2 and key[1][0] == 'F'
+                and key[1][1] in 'ABCLMQR'):
+            new_key = (key[0], key[1], 'W')
+            if rulemap.get(new_key) != rulemap[key]:
+                rulemap[new_key] = rulemap[key]
+                n_hold_w += 1
+    # 解凍後位相 FT2: (x, a, www) -> y の規則を (x, a, FT2) -> y にも複製する。
+    # FT2 は右端の管路だけが提示するので、境界セル以外の既存規則には影響しない。
+    ft2_copies = 0
+    for key in list(rulemap.keys()):
+        if key[2] == 'www':
+            new_key = (key[0], key[1], 'FT2')
+            if rulemap.get(new_key) != rulemap[key]:
+                rulemap[new_key] = rulemap[key]
+                ft2_copies += 1
     ordered = emit(rulemap, list(rulemap.keys()))
     write_file(states, pre, post, ordered)
-    print(f'add_a1: states={len(states)} rules={len(ordered)} (+{n_added})')
+    print(f'add_a1: states={len(states)} rules={len(ordered)} '
+          f'(+{n_added}+{n_hold_w}W-hold+{ft2_copies}FT2)')
 
 
 def run(binary, args):
