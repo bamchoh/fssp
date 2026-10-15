@@ -821,15 +821,13 @@ fn plan_a1_signals(analysis: &FaultAnalysis, config: &Config, a3: bool) -> (Vec<
                 .sum::<usize>()
             + 2 * n_last
             + if a3 { p - i + 1 } else { 0 };
-        // 解凍信号 FT: t_i2 - 1 に管路の左口(= I_i 右端セルの右入力)へ直接注入。
-        // 凍結起動 FS は n_i >= 2 の区間ではスケジューラを使わない: 区間の
-        // own choreography の C 波が右端に到達する時刻(t_i + n_i - 1 = t_1i)が
-        // 凍結起動そのもの = 論文の「反射信号が t_1i に I1 の右端で凍結を起動」。
-        // ルール層のトリガーは (C, L, W) -> FL(W = 管路の境界マーカー提示)。
-        // n_i = 1 の縮退区間だけ FS を残す(C 波が存在しないので t_i にクランプ
-        // 注入し、将軍が (www, M, FS) -> FM で凍結する)。
+        // 解凍信号 FT: p=1 では注入しない(壁反射の T3 波の遠位口 pickup が
+        // 純 FT に変換して同じ時刻に提示する=FT 注入を撤廃した p=1 経路)。
+        // p>=2 では区間識別つき往復波が未実装のため、各管路への隔離配信(注入)
+        // で解凍提示する(論文に対する既知の置換装置の記録: SPEC「実装の記録」)。
         let t_1i = t_i(i) + n_i - 1;
         let t_2i = t_1i + delta;
+        let local_thaw = p == 1 && n_i >= 2;
         if let Some(ft) = ft {
             if n_i >= 2 {
                 notes.push(format!(
@@ -861,12 +859,14 @@ fn plan_a1_signals(analysis: &FaultAnalysis, config: &Config, a3: bool) -> (Vec<
                     });
                 }
             }
-            plan.push(PlannedSignal {
-                time: t_2i - 1,
-                cell: d.start,
-                to_left: true,
-                value: ft,
-            });
+            if !local_thaw {
+                plan.push(PlannedSignal {
+                    time: t_2i - 1,
+                    cell: d.start,
+                    to_left: true,
+                    value: ft,
+                });
+            }
         }
         // 次の正常区間 I_{i+1} の将軍起動信号(管路の L→R パイプラインを流れて
         // I_{i+1} の左端セルの左入力に提示される)

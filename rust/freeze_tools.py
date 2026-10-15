@@ -874,7 +874,10 @@ def seg_expected(a3, sizes, golds):
             d += p - i + 1
         return d
 
-    # セル番号 → (区間種, 区間番号, 区間内座標)
+    # セル番号(全体座標) → (区間種, 区間番号, セル番号)。全体座標 x のセルは
+    # t = x-1 に fast 継続(TR)の表示を持つ(将軍の 1/1 波が管路を 1/1 で渡って
+    # 各 I_i (i>=2) を未起床のまま通過する。I_{p+1} の壁セル(x = n)では表示
+    # なしで T3 に折り返す)。
     pos = []
     x = 1
     for k, sz in enumerate(sizes):
@@ -905,7 +908,8 @@ def seg_expected(a3, sizes, golds):
                     f_ = t_st + n_seg - 1 + (n_seg - j)
                     dd = delta(idx)
                     if t < t_st:
-                        row.append('L')
+                        # fast 継続(TR): 未起床のまま t = x-1 で右向き 1/1 で通過
+                        row.append('TR' if t == seg_x - 1 else 'L')
                     elif t < f_:
                         row.append(g[t - t_st][j - 1])
                     elif t < f_ + dd:
@@ -918,7 +922,32 @@ def seg_expected(a3, sizes, golds):
                     else:
                         row.append(g[t - dd - t_st][j - 1])
                 else:
-                    if t < t_st:
+                    # 最終区間 I_{p+1}: fast 継続(TR)の通過と、壁反射の左走行波
+                    # T3(未起床セルでは純 T3、起床済みセルでは複合 <X>T3)の戻り。
+                    # T2(起床)以降は自らの choreography、その間も T3 波の表示だけ
+                    # が上に来る(a1_expected と同じ構造)。
+                    x2 = j
+                    fb = next((k2 for k2, gr in enumerate(g)
+                               if gr[j - 1].strip() != 'L'), None)
+                    fb = fb if fb is not None else 10 ** 9
+                    t_tr = seg_x - 1
+                    t_ft = 2 * n - 1 - seg_x
+                    if x2 == n_seg:
+                        # 壁セル: TR の通過は表示されず T3 に折り返す
+                        if t == t_ft:
+                            row.append('T3')
+                        elif t < t_st:
+                            row.append('L')
+                        else:
+                            row.append(g[t - t_st][j - 1])
+                    elif t == t_tr:
+                        row.append('TR')
+                    elif t == t_ft:
+                        if t < t_st + fb:
+                            row.append('T3')
+                        else:
+                            row.append(g[t - t_st][j - 1].strip() + 'T3')
+                    elif t < t_st:
                         row.append('L')
                     else:
                         row.append(g[t - t_st][j - 1])
