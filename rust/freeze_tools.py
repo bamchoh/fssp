@@ -23,6 +23,9 @@ import os
 import subprocess
 import sys
 
+# -I 実行でも同居モジュール(check_keys など)を import できるようにする
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 BIN = os.path.join(HERE, 'target', 'release', 'fssp.exe')
@@ -479,6 +482,7 @@ A1_CASES = [
     (10, 5, 10),
     (2, 1, 2),
     (3, 3, 4),
+    (4, 3, 23),   # n=30 -f 5-7 (I2 が長い=壁反射波が起床済み区間を横断する)
 ]
 
 
@@ -518,8 +522,13 @@ def a1_expected(gold1_c, gold2_c, n1, m1, n2):
                     fb = fb if fb is not None else 10 ** 9
                     t_tr = t1 + m1 + 1 + (x2 - 1)
                     t_ft = t1 + m1 + n2 + (n2 - x2)
-                    if t == t_ft and t_ft <= T2 + fb:
-                        row.append('FT')
+                    if t == t_ft:
+                        # 壁反射の左走行波 T3: 未起床セルでは純 T3、起床済みセル
+                        # では複合 carrier <X>T3(choreography を重畳保持する)
+                        if t < T2 + fb:
+                            row.append('T3')
+                        else:
+                            row.append(gold2_c[t - T2][x2 - 1].strip() + 'T3')
                     elif t == t_tr and t_tr <= T2 + fb and x2 < n2:
                         row.append('TR')
                     elif t >= T2:
@@ -538,6 +547,134 @@ def run_a1(n1, m1, n2):
     spec = f'{n1 + 1}' if m1 == 1 else f'{n1 + 1}-{n1 + m1}'
     text = run(BIN, ['-r', OUT_RULE, '-s', str(n), '-d', '-f', spec])
     return state_rows(text), text
+
+
+def add_composite():
+    # CA 局所化 第 2 段(実装): 壁反射の左走行解凍波 T3 と、起床済みセル上の
+    # 複合 carrier <X>T3(chateau+signal)。論文の第 3 反射信号は I_{p+1} を左走行
+    # して I_i の右端で解凍を起動する(p=1 では to_left 管路に回収されて I1 を
+    # 解凍)。横断先のセルが起床済み(choreography 表示中)のとき、波の通過で
+    # choreography を止めることはできない(I_{p+1} は 2n-2 で無遅延発火する)ので:
+    #   - 吸収:  (l, X, <Y>T3) -> <f(l,X,Y)>T3。セルは複合表示になり、自身の
+    #            choreography の次状態 f(l,X,Y) を複合の X 部分に保持する。波は
+    #            1/1 で進むので時刻に遅延は生じない。
+    #   - 放出:  (l, <X>X>T3, r) ではなく (l, <X>T3, r) -> f(l,X,r)。次ステップ
+    #            で choreography に戻り、波は左隣へ(左隣は次の吸収を行う)。
+    # 未起床(静止 L)セル上では波は純 T3 のまま走る。管路の遠位口 pickup は
+    # (rust 側)T3 / 複合を検知すると純 FT に変換して管路に乗せる。
+    states, rules, pre, post = load(OUT_RULE)
+    rulemap = parse_rules(rules)
+    names = [state_name(s) for s in states]
+    interior = ['A', 'B', 'C', 'L', 'M', 'Q', 'R']
+    composites = [s + 'T3' for s in interior]
+    if 'T3' not in names:
+        states.append(pad('T3') + '@101010,D08040,others')
+        names.append('T3')
+    for c in composites:
+        if c not in names:
+            states.append(pad(c) + '@101010,B070C0,others')
+            names.append(c)
+    # 1. 壁反射の折り返し(wip の FT 直接流用を T3 に。I_{p+1}=1 セル区間の
+    #    即時折り返しと、FT2 位相の管路がある場合の折り返しも T3 へ)
+    rulemap[('TR', 'L', 'www')] = 'T3'
+    rulemap[('CB', 'L', 'www')] = 'T3'
+    rulemap[('TR', 'L', 'FT2')] = 'T3'
+    rulemap[('CB', 'L', 'FT2')] = 'T3'
+    # 1b. p >= 2: 横断の入口・放出の管路境界(W 提示)コンテキスト。I_{i+1} が
+    #     1 セルでその右隣が次の管路の場合、入口/放出の右入力は W。
+    rulemap[('CB', 'L', 'W')] = 'TR'
+    for x in ['L', 'www']:
+        rulemap[(x, 'TR', 'W')] = 'L'
+    # 1c. 出入口の衝突: 左入力に CB(区間の送出)が流れていて、右隣に左走行波
+    #     (純 T3 / 複合 <Y>T3)が同時にいる場合、表示は横断 TR を優先する
+    #     (送出波の旅程が優先。T3 は次ステップで管路の口で消える)。
+    for y in ['T3'] + [s + 'T3' for s in ['A', 'B', 'C', 'L', 'M', 'Q', 'R']]:
+        rulemap[('CB', 'L', y)] = 'TR'
+    # 2. 未起床セル上の左走行波(wip の FT 直接流用を T3 に置換し、FT の
+    #    未起床セル上の振る舞いは base の規則に復帰する)
+    rulemap[('L', 'L', 'FT')] = 'L'
+    rulemap[('www', 'L', 'FT')] = 'L'
+    for (l, c, r) in [
+        ('L', 'FT', 'L'), ('www', 'FT', 'L'), ('L', 'FT', 'www'),
+    ]:
+        rulemap[(l, c, r)] = 'L'
+    for (l, c, r) in [
+        ('www', 'L', 'T3'), ('L', 'L', 'T3'),
+        ('L', 'T3', 'L'), ('www', 'T3', 'L'), ('L', 'T3', 'www'),
+    ]:
+        rulemap[(l, c, r)] = 'T3' if c == 'L' else 'L'
+    # 境界の左右で状態が違うケース: 凍結・起床済みの左隣を持つ静止ホスト
+    # (l = choreography、r = L)の放出も L。
+    for x in ['www', 'L'] + interior:
+        rulemap[(x, 'T3', 'L')] = 'L'
+        rulemap[(x, 'T3', 'www')] = 'L'
+    # ホストの放出とウェーブ起動の同時機(通過の 1 ステップ後に起床が来る):
+    # 左隣が起動前兆(C/M/NG)のときは放出先が起動先表示になる。
+    # (未起床セルが f(l,L,r) で C/M に起動する規則 (C,L,L)->C、(M,L,L)->C、
+    #  (NG,L,L)->M の機械的続き)
+    rulemap[('C', 'T3', 'L')] = 'C'
+    rulemap[('M', 'T3', 'L')] = 'C'
+    rulemap[('NG', 'T3', 'L')] = 'M'
+    # 通過済みの隣接セル(波が 1 セル移動した後の右側のセル): 左に入った
+    # T3 に触れても変化しない。
+    rulemap[('T3', 'L', 'L')] = 'L'
+    rulemap[('T3', 'L', 'www')] = 'L'
+    # 3. 放出 (center 偽装): 起床済み表示 X 上の複合は X と同じ遷移をする
+    n_release = 0
+    for key in list(rulemap.keys()):
+        (l, c, r) = key
+        if c in interior:
+            nk = (l, c + 'T3', r)
+            if rulemap.get(nk) != rulemap[key]:
+                rulemap[nk] = rulemap[key]
+                n_release += 1
+    # 3b. 通過済み隣接の左入力偽装(左隣が複合のセル): 左隣の choreography
+    # 値 X で置き換えた同じ遷移をする(起床波の伝播も複合越しに続く。純 T3
+    # が左にある場合は 2 の放出規則が L を返すので別扱い)
+    n_left = 0
+    for key in list(rulemap.keys()):
+        (l, c, r) = key
+        if l in interior:
+            nk = (l + 'T3', c, r)
+            if rulemap.get(nk) != rulemap[key]:
+                rulemap[nk] = rulemap[key]
+                n_left += 1
+    # 4. 吸収: (l, X, <Y>T3) -> <f(l,X,Y)>T3 / (l, X, T3) -> <f(l,X,L)>T3
+    #    (target が choreography 表示になる組のみ。吸収は複合の Y 部分から
+    #     右隣の choreography 値を取り出して通常遷移と同じ次状態を保持する)
+    n_absorb = 0
+    for key in list(rulemap.keys()):
+        (l, c, r) = key
+        y = rulemap[key]
+        if c in interior and c != 'L' and r in interior and y in interior:
+            nk = (l, c, r + 'T3')
+            if rulemap.get(nk) != y + 'T3':
+                rulemap[nk] = y + 'T3'
+                n_absorb += 1
+        if c in interior and c != 'L' and r == 'L' and y in interior:
+            nk = (l, c, 'T3')
+            if rulemap.get(nk) != y + 'T3':
+                rulemap[nk] = y + 'T3'
+                n_absorb += 1
+    # 2b. 接触(波の通過とウェーブ起動が同時刻)の吸収: セルが起床する瞬間に
+    #     波が通りかかる場合は複合で両方を担う(左隣の C/M/NG = ウェーブ起動
+    #     の前兆表示で区別。f(l,L,L) = 起動先表示と同じになる)。
+    rulemap[('C', 'L', 'T3')] = 'CT3'
+    rulemap[('M', 'L', 'T3')] = 'CT3'
+    rulemap[('NG', 'L', 'T3')] = 'MT3'
+    # 5. 複合の左隣が静止 L の場合も純 T3 で貫通(p >= 2 の未起床帯を予約。
+    #    上の吸収生成が (l, 'L', <Y>T3) を作った場合はここで上書きする)
+    n_asleep = 0
+    for y in interior:
+        yk = y + 'T3'
+        for l in ['www', 'L'] + interior:
+            if rulemap.get((l, 'L', yk)) != 'T3':
+                rulemap[(l, 'L', yk)] = 'T3'
+                n_asleep += 1
+    ordered = emit(rulemap, list(rulemap.keys()))
+    write_file(states, pre, post, ordered)
+    print(f'add_composite: states={len(states)} rules={len(ordered)} '
+          f'(+{n_release} release +{n_absorb} absorb +{n_asleep} asleep)')
 
 
 def verify_a1():
@@ -884,9 +1021,43 @@ def sweep_a3():
     print(f'A3 sweep: {total} layouts, {fails} failures (p=2 + p=3)')
 
 
+# ── A1 (p=1) の全配置スイープ ─────────────────────────────────────────
+def sweep_a1():
+    # p=1: n=5..16 の全配置 (n1 >= m1)。期待 = SYNCED at 2n-2。
+    # 大きい n のスポット + 未定義規則キーの包含確認(check_keys)。
+    total = fails = 0
+    for n in range(5, 17):
+        for n1 in range(1, n - 1):
+            for m1 in range(1, n - n1):
+                n2 = n - n1 - m1
+                if n1 < m1 or n2 < 1:
+                    continue
+                spec = f'{n1+1}' if m1 == 1 else f'{n1+1}-{n1+m1}'
+                out = run(BIN, ['-r', OUT_RULE, '-s', str(n), '-f', spec])
+                total += 1
+                if f'SYNCED (intact cells) at t={2 * n - 2}' not in out:
+                    fails += 1
+                    print(f'FAIL n={n} -f {spec} (n1={n1} m1={m1} n2={n2})')
+    print(f'A1 sweep n=5..16: {total} layouts, {fails} failures')
+    import check_keys  # 遅延(import 順の循環を避ける)
+    spots = [(22, 4, 3), (30, 4, 3), (30, 7, 5), (40, 10, 8), (50, 20, 10),
+             (50, 5, 1), (44, 3, 2), (36, 9, 9), (50, 45, 2)]
+    for (n, n1, m1) in spots:
+        spec = f'{n1+1}' if m1 == 1 else f'{n1+1}-{n1+m1}'
+        out = run(BIN, ['-r', OUT_RULE, '-s', str(n), '-f', spec])
+        ok = f'SYNCED (intact cells) at t={2 * n - 2}' in out
+        und = check_keys.check(n, spec, verbose=False)
+        if not ok or und:
+            print(f'FAIL n={n} n1={n1} m1={m1}: sync={ok}, undefined={len(und)}')
+    print(f'A1 spots: {len(spots)} layouts, '
+          f'{sum(1 for (n, n1, m1) in spots if check_keys.check(n, f"{n1+1}" if m1 == 1 else f"{n1+1}-{n1+m1}", verbose=False))} with undefined keys')
+
+
 if __name__ == '__main__':
     cmd = sys.argv[1] if len(sys.argv) > 1 else 'verify'
     {'gen': gen, 'discover': discover, 'verify': verify, 'add_a1': add_a1,
+     'add_composite': add_composite,
      'verify_a1': verify_a1, 'discover_a1': discover_a1,
+     'sweep_a1': sweep_a1,
      'sweep_a2': sweep_a2, 'verify_seg': verify_seg,
      'sweep_a3': sweep_a3}[cmd]()

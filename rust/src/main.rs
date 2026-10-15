@@ -901,6 +901,17 @@ struct FaultField {
     ft2_state: Option<u8>, // 解凍後のアイドル提示(σ 線上の壁反射と凍結起動の区別)
     cb_state: Option<u8>,  // 境界 Carrier(fast 信号の管路 entry pickup 対象)
     tr_state: Option<u8>,  // fast 継続の対岸横断状態
+    // 壁反射の左走行波 T3 と、起床済みセル上の複合 carrier <X>T3(chateau+signal)。
+    // 遠位口 pickup の対象。pickup した複合は純 FT に変換して管路に乗せる。
+    t3_carriers: Vec<u8>,
+    // 故障区間数。to_left 管路への FT 変換 pickup は p=1 のときだけ有効
+    // (p>=2 では各区間の解凍は注入 FT で提示され、壁反射波を区間に拾わせると
+    //  他区間の波が誤って解凍を起動するため、波は管路の遠位口で消える)
+    p: usize,
+    // D1 の(入口セル, 遠位口セル)。CB の to_right pickup は入口セル d1.0 だけ、
+    // to_left の変換 pickup は p=1 のとき d1.1 で有効。
+    // None = 旧挙動(全管路で pickup、テスト用)。
+    d1: Option<(usize, usize)>,
 }
 
 impl FaultField {
@@ -908,13 +919,46 @@ impl FaultField {
         !self.mask[c]
     }
 
+    // 対岸の正常セルの表示 d が管路に乗せる解凍信号(FT)かどうか。
+    // 純 FT に加え、壁反射の左走行波 T3 と複合 carrier <X>T3 も対象:
+    // 複合は chateau 部分をセル自身に残すので、管路には純 FT を載せる。
+    fn pickup_thaw(&self, d: u8) -> Option<u8> {
+        if Some(d) == self.ft_state || self.t3_carriers.contains(&d) {
+            self.ft_state
+        } else {
+            None
+        }
+    }
+
     fn new(mask: &[bool], config: &Config, signal_only: bool) -> FaultField {
+        Self::new_ctx(mask, config, signal_only, 0, None)
+    }
+
+    fn new_ctx(
+        mask: &[bool],
+        config: &Config,
+        signal_only: bool,
+        p: usize,
+        d1: Option<(usize, usize)>,
+    ) -> FaultField {
         let n = mask.len() - 2;
         let w_state = find_state_index(config, "W");
         let ft_state = find_state_index(config, "FT");
         let ft2_state = find_state_index(config, "FT2");
         let cb_state = find_state_index(config, "CB");
         let tr_state = find_state_index(config, "TR");
+        // T3 と複合 carrier <X>T3(X ∈ A,B,C,L,M,Q,R)の状態番号。名前の
+        // 規約は「T3 で終わる 2〜3 文字の名前」。ルールファイルに無ければ空。
+        let t3_carriers: Vec<u8> = config
+            .states
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| {
+                let name = s.name.trim();
+                name == "T3" || (name.len() == 3 && name.ends_with("T3"))
+            })
+            .map(|(i, _)| i as u8)
+            .collect();
         // 信号層のアイドル値。R→L 管路(I_i 右端セルの右入力)は境界マーカー W
         // を提示する(www だと凍結起動と素の壁反射 (C,L,www)->M が区別できず衝突)。
         // 解凍信号 FT が口を通過した後は FT2(解凍後位相)に切り替わる。
@@ -937,6 +981,9 @@ impl FaultField {
             ft2_state,
             cb_state,
             tr_state,
+            t3_carriers,
+            p,
+            d1,
         };
         // 壁は故障ではない
         field.mask[0] = false;
@@ -989,7 +1036,12 @@ impl FaultField {
                     self.to_right[c - 1]
                 } else if self.signal_only {
                     let d = current[c - 1];
-                    if Some(d) == self.cb_state || Some(d) == self.tr_state {
+                    let cb_ok = self.d1.map(|(s, _)| c == s).unwrap_or(true);
+                    // 入口 pickup: CB は最初の管路(I1 凍結起動 = fast 信号の始発)
+                    // だけで取り込む(I_i (i>=2) の凍結起動 Carrier の表示を拾うと
+                    // fast 信号が複製され、各区間の波と衝突する)。TR(fast 継続)は
+                    // どこでも取り込んでよい(fast 継続そのもの)。
+                    if (Some(d) == self.cb_state && cb_ok) || Some(d) == self.tr_state {
                         d
                     } else {
                         config.external as u8
@@ -1004,11 +1056,13 @@ impl FaultField {
                     let inbound = if self.mask[c + 1] {
                         self.to_left[c + 1]
                     } else {
-                        let d = current[c + 1];
-                        if Some(d) == self.ft_state {
-                            d
-                        } else {
-                            config.external as u8
+                        // m == 1: 対岸の正常セルの表示からの遠位口 pickup
+                        // (p=1 かつ D1 の口のときだけ。p>=2 では注入で提示する)
+                        let allowed = self.p == 1
+                            && self.d1.map_or(true, |(_, e)| c == e);
+                        match if allowed { self.pickup_thaw(current[c + 1]) } else { None } {
+                            Some(v) => v,
+                            None => config.external as u8,
                         }
                     };
                     if inbound != config.external as u8 {
@@ -1032,12 +1086,14 @@ impl FaultField {
                     self.to_left[c + 1]
                 } else if self.signal_only {
                     // 遠位口 pickup(対岸の正常セルの表示から取り込む):
-                    // 左走行解凍信号 FT の到着を 1/1 で管路に乗せる。
-                    let d = current[c + 1];
-                    if Some(d) == self.ft_state {
-                        d
-                    } else {
-                        config.external as u8
+                    // 左走行解凍信号(FT / T3 / 複合 <X>T3)の到着を 1/1 で
+                    // 管路に乗せ、複合は純 FT に変換する。p=1 かつ D1 の口
+                    // のときだけ有効(他の区間の波はここで消える)。
+                    let allowed = self.p == 1
+                        && self.d1.map_or(true, |(_, e)| c == e);
+                    match if allowed { self.pickup_thaw(current[c + 1]) } else { None } {
+                        Some(v) => v,
+                        None => config.external as u8,
                     }
                 } else {
                     current[c + 1]
@@ -1493,7 +1549,18 @@ fn main() {
         // A1 モード: -f 指定で --inject/--wallset なし。管路は信号だけを運び、
         // Umeo A1/A2 の式から区間構造より算出した時刻で凍結/解凍/将軍起動を提示する。
         let signal_only = fault_arg.is_some() && injections.is_empty() && wallsets.is_empty();
-        let mut ff = FaultField::new(&mask, &config, signal_only);
+        // to_left 管路の変換 pickup は p=1 のときだけ有効(他区間の反射波が
+        // 隔離: to_left 管路の FT 変換 pickup は p=1 の D1 だけ有効(p>=2 では
+        // 各区間の解凍を注入 FT が担う。他区間の反射波が解凍を起動するのを防ぐ)。
+        // to_right 入口の CB pickup も D1 だけ(fast 信号は 1 本なので)。
+        let d1 = analysis
+            .as_ref()
+            .map(|a| (a.segments[1].start, a.segments[1].end));
+        let p_cnt = analysis
+            .as_ref()
+            .map(|a| a.segments.iter().filter(|s| !s.intact).count())
+            .unwrap_or(0);
+        let mut ff = FaultField::new_ctx(&mask, &config, signal_only, p_cnt, d1);
 
         // A1/A2 の信号スケジュールを区間構造から組み立てる
         let signals: Vec<PlannedSignal> = match &analysis {
