@@ -944,6 +944,11 @@ struct FaultField {
     // 会合セルから 1/1 右走行して I1 右端に現れたとき、to_right 入口 pickup
     // (入口セル d1.0 = D1 左端だけ)がこれを管路に乗せる。
     ng_carriers: Vec<u8>,
+    // NG 状態(注入始発の素値)。2 歩提示の判定に使う。
+    ng_state: Option<u8>,
+    // NG 起動中継の 2 歩提示(遠位口で 1 歩保持)。
+    ng_hold: Vec<u8>,
+    ng_hold_nex: Vec<u8>,
     // 故障区間数。to_left 管路への FT 変換 pickup は p=1 のときだけ有効
     // (p>=2 では各区間の解凍は注入 FT で提示され、壁反射波を区間に拾わせると
     //  他区間の波が誤って解凍を起動するため、波は管路の遠位口で消える)
@@ -957,6 +962,50 @@ struct FaultField {
 impl FaultField {
     fn intact(&self, c: usize) -> bool {
         !self.mask[c]
+    }
+
+    // 値 v が NG 起動中継の 2 歩提示の対象か(会合放出の保値付き carrier
+    // {X}NG、または注入始発の素の NG 状態)。
+    fn is_ng_launch(&self, v: u8) -> bool {
+        self.ng_carriers.contains(&v) || self.ng_state == Some(v)
+    }
+
+    // 遠位口 c から右の区間が I_{i+1} として、対 (I_{i+1}, I_{i+2}) の会合
+    // 機械が配信可能か(plan_a1_signals の pair_deliverable と同じ条件)。
+    // 配信可能な機械だけが自分の journey(S33 誕生)を持つ意味がある:
+    //   - 次の管路 D_{i+1} が存在する(i+1 <= p)。無ければ I_{i+1} は最後の
+    //     区間 I_{p+1} で、2n-2 でそのまま発火するので journey 不要。
+    //   - c_meet(i+1) <= n_{i+1}、dt_{i+1} > S_{i+1}、n_{i+2} != 1。
+    // これらが揃わない配置では journey の誕生が発火時刻と衝突して
+    // choreography を壊す(a1m バッテリと A2 スイープで発見)ので、
+    // 起動中継の 2 歩提示をアームしない=誕生キー (NG|LNG,M,L) が生じない。
+    fn next_pair_deliverable(&self, c: usize) -> bool {
+        let n = self.mask.len() - 2;
+        let mut x = c + 1;
+        if x > n {
+            return false;
+        }
+        let mut n_i1 = 0usize;
+        while x <= n && !self.mask[x] {
+            n_i1 += 1;
+            x += 1;
+        }
+        let mut m_i1 = 0usize;
+        while x <= n && self.mask[x] {
+            m_i1 += 1;
+            x += 1;
+        }
+        let mut n_i2 = 0usize;
+        while x <= n && !self.mask[x] {
+            n_i2 += 1;
+            x += 1;
+        }
+        if m_i1 == 0 || n_i1 == 0 || n_i2 == 0 {
+            return false; // 最後の区間 or 変則配置: journey 不要
+        }
+        let s = n_i1 + m_i1;
+        let c_meet = if s % 2 == 0 { s / 2 + 1 } else { (s + 3) / 2 };
+        !self.a3 && c_meet <= n_i1 && 2 * m_i1 + 2 * n_i2 > s && n_i2 != 1
     }
 
     // 対岸の正常セルの表示 d が管路に乗せる解凍信号(FT)かどうか。
@@ -1001,7 +1050,14 @@ impl FaultField {
             .enumerate()
             .filter(|(_, s)| {
                 let name = s.name.trim();
-                name == "T3" || (name.len() == 3 && name.ends_with("T3"))
+                // T3 / <X>T3(3 文字)に加え、journey 複合の T3 付き
+                // carrier lo{X}{ph}T3(6 文字・先頭小文字)も pickup 対象
+                // (T3 エコーが I_{i+1} の journey 滞在中のセルを 1/1 で
+                //  抜ける: ②-B 衝突族)。
+                name == "T3"
+                    || (name.len() == 3 && name.ends_with("T3"))
+                    || (name.len() == 6 && name.ends_with("T3")
+                        && name.chars().next().map_or(false, |c| c.is_lowercase()))
             })
             .map(|(i, _)| i as u8)
             .collect();
@@ -1016,6 +1072,7 @@ impl FaultField {
             })
             .map(|(i, _)| i as u8)
             .collect();
+        let ng_state = find_state_index(config, "NG");
         // 信号層のアイドル値。R→L 管路(I_i 右端セルの右入力)は境界マーカー W
         // を提示する(www だと凍結起動と素の壁反射 (C,L,www)->M が区別できず衝突)。
         // 解凍信号 FT が口を通過した後は FT2(解凍後位相)に切り替わる。
@@ -1044,6 +1101,9 @@ impl FaultField {
             tr_state,
             t3_carriers,
             ng_carriers,
+            ng_state,
+            ng_hold: vec![0u8; n + 2],
+            ng_hold_nex: vec![0u8; n + 2],
             p,
             d1,
             a3,
@@ -1095,7 +1155,7 @@ impl FaultField {
                 // 先頭セルに入る = 論文の「反射の到着吸収」)。carrier(CB = 凍結
                 // 起動 Carrier / TR = fast 継続の対岸横断)の表示のときだけ
                 // 取り込み、それ以外はアイドル www。
-                self.to_right_nex[c] = if self.mask[c - 1] {
+                let trv = if self.mask[c - 1] {
                     self.to_right[c - 1]
                 } else if self.signal_only {
                     let d = current[c - 1];
@@ -1119,6 +1179,41 @@ impl FaultField {
                 } else {
                     current[c - 1]
                 };
+                // NG 起動中継の 2 歩提示: 遠位口(右隣が正常セル)で NG 系 carrier
+                // が到着したステップと次ステップの 2 歩、同じ値を提示する。
+                // 会合放出/注入のどちらの始発でも I2 左端の起動キー (NG,l,L)->M
+                // が t_i−1 で、続く誕生キー (NG,M,L)->複合 journey が t_i で
+                // 成立する(誕生キーは起動 M 表示の 2 歩目に左入力 LNG/NG を
+                // 見る必要がある。素の (L,M,L) は choreography の M 保値規則
+                // と衝突するので誕生キーに使えない)。
+                if self.ng_hold[c] != 0 {
+                    self.ng_hold_nex[c] = 0;
+                    self.to_right_nex[c] = self.ng_hold[c];
+                } else {
+                    // else 枝でも毎ステップ書く(swap が過去の保持値を _nex に
+                    // 残すので、書かないと 2 タイト毎の幽霊提示になる)
+                    self.ng_hold_nex[c] = 0;
+                    self.to_right_nex[c] = trv;
+                    if self.intact(c + 1)
+                        && self.is_ng_launch(trv)
+                        && self.next_pair_deliverable(c)
+                    {
+                        self.ng_hold_nex[c] = trv;
+                    } else if self.intact(c + 1)
+                        && !self.next_pair_deliverable(c)
+                        && self.is_ng_launch(self.to_right[c])
+                        && self.is_ng_launch(trv)
+                    {
+                        // 配信可能でない対の機械(I_{p+1} 等)への会合放出: 会合セルが奇数 S で 2 歩
+                        // 表示すると管路に 2 便到着する。便は 1 便目(起動)
+                        // だけ提示し、2 便目を呑む(誕生キーが生じない)。
+                        self.to_right_nex[c] = if self.signal_only {
+                            config.soldier as u8
+                        } else {
+                            config.external as u8
+                        };
+                    }
+                }
                 self.to_left_nex[c] = if self.signal_only && c > 1 && !self.mask[c - 1] {
                     // 近位口(左隣が正常セル)。入来信号を提示に優先させる:
                     // m >= 2 は右隣のストリーム中継、m == 1 は対岸の正常セルの
@@ -1204,6 +1299,7 @@ impl FaultField {
         std::mem::swap(&mut self.to_right, &mut self.to_right_nex);
         std::mem::swap(&mut self.to_left, &mut self.to_left_nex);
         std::mem::swap(&mut self.ctrl, &mut self.ctrl_nex);
+        std::mem::swap(&mut self.ng_hold, &mut self.ng_hold_nex);
     }
 
     // 凍結状態のダンプ(-f/--inject 指定時のみ)。凍結セルに * を出す。
@@ -1300,6 +1396,18 @@ fn simulate_fault(
                     ff.to_left[sig.cell] = sig.value;
                 } else {
                     ff.to_right[sig.cell] = sig.value;
+                    // 注入始発の NG(会合放出の注入代替): 遠位口で 2 歩提示
+                    // する。流入口 pickup を通らない直接書き込みは誕生キー
+                    // (NG,M,r) の保持提示をアームしないので、ここで ng_hold
+                    // (現行値)に直接アームする(m=1 のとき流入口=遠位口で
+                    // これが唯一の経路。m>=2 では中継の到着が自然にアーム)。
+                    // 次ステップの fault 枝がこれを提示して消す。
+                    if ff.is_ng_launch(sig.value)
+                        && ff.intact(sig.cell + 1)
+                        && ff.next_pair_deliverable(sig.cell)
+                    {
+                        ff.ng_hold[sig.cell] = sig.value;
+                    }
                 }
             }
         }

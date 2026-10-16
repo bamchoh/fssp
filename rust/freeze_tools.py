@@ -494,6 +494,17 @@ A1_CASES = [
 ]
 
 
+_gold2m_cache = {}
+
+
+def gold2m_cells(n2):
+    """I_{i+1} の choreography = 会合機械仕様の障害なし走行(journey 込み)。
+    golden_rows(会合ルール集合の障害なし走行)を n2 で実行して返す。"""
+    if n2 not in _gold2m_cache:
+        _gold2m_cache[n2] = [cells(row) for row in golden_rows(n2)]
+    return _gold2m_cache[n2]
+
+
 def a1_expected(gold1_c, gold2_c, n1, m1, n2):
     n = n1 + m1 + n2
     t1 = n1 - 1
@@ -1203,6 +1214,126 @@ def add_meeting():
     write_file(states, pre, post, ordered)
     print(f'add_meeting: states={len(states)} rules={len(ordered)} '
           f'(overrides={n_override[0]})')
+
+def add_birth():
+    # ②-B 誕生+衝突族(2026-10-17 exp_birth 実験の緑化結果を本線へ):
+    #   1. 誕生キー (NG|LNG, M, L) -> mS33。管路中継の NG 2 歩提示(rust 側
+    #      ng_hold)の 2 歩目に左入力 LNG/NG を見て I_{i+1} の journey を誕生
+    #      させる。素の (L,M,L) は I1 解凍後 ordinary choreography でも起こる
+    #      ので絶対に置換しない。
+    #   2. T3 エコー × journey 複合の衝突族(fix-point):
+    #      - 左レーン <X+ph>T3: 左隣の偽装(同 target)
+    #      - 中心    <X+ph>T3: 波が抜けた後の普通の進行(同 target)
+    #      - 右レーン <r>T3:   吸収(target の T3 付き表示)。
+    #        就寝セル(中心 L)は除外(純 T3 貫通の既存族を壊さない)
+    #      新状態 = lo[h]+ph+T3(21): journey 滞在中のセルが T3 を 1 歩運ぶ
+    #      carrier(遠位口 pickup は rust 側で 6 文字小文字 T3 複合を認識する)。
+    states, rules, pre, post = load(OUT_RULE)
+    rulemap = parse_rules(rules)
+    names = [state_name(s) for s in states]
+    held = ['A', 'B', 'C', 'L', 'M', 'Q', 'R']
+    lo = {h: h.lower() for h in held}
+    phn = ('S33', 'S3A', 'S3B')
+    interior = held
+    # 実在状態名(未知レーンを書くとバイナリのパーサが黙って idx をずらし、
+    # 規則表を全面的に壊す)
+    lane_set = set(x.strip() for x in names)
+
+    n_rep = n_add = 0
+    for (lhs, tgt) in [(('NG', 'M', 'L'), 'mS33'), (('LNG', 'M', 'L'), 'mS33')]:
+        cur = rulemap.get(lhs)
+        if cur != 'mS33':
+            if lhs in rulemap:
+                n_rep += 1
+            else:
+                n_add += 1
+            rulemap[lhs] = 'mS33'
+
+    jcomps = [lo[h] + ph for h in held for ph in phn]
+    jcarr = [lo[h] + ph + 'T3' for h in held for ph in phn]
+    for nm in jcarr:
+        if nm not in names:
+            states.append(pad(nm) + '@101010,B070C0,others')
+            names.append(nm)
+    lane_set = set(x.strip() for x in (state_name(s) for s in states))
+
+    def t3ify(t):
+        t = t.strip()
+        if t in interior or t in jcomps:
+            return t + 'T3'
+        return None
+
+    n_fp = 0
+    for _round in range(8):
+        added = 0
+        snap = list(rulemap.items())
+        for (l, c, r), t in snap:
+            l_, c_, r_ = l.strip(), c.strip(), r.strip()
+            lt = l_ + 'T3'
+            ct = c_ + 'T3' if (c_ in interior or c_ in jcomps) else None
+            rt = 'T3' if r_ == 'L' else (r_ + 'T3' if r_ != 'T3' else None)
+            if lt in lane_set:
+                key = (lt, c_, r_)
+                if rulemap.get(key) != t:
+                    rulemap[key] = t
+                    added += 1
+            if ct is not None and ct in lane_set:
+                key = (l_, ct, r_)
+                if rulemap.get(key) != t:
+                    rulemap[key] = t
+                    added += 1
+            if rt is not None and rt in lane_set:
+                if c_ == 'L':
+                    continue  # 就寝セル上の波は純 T3 貫通(既存族)
+                t2 = t3ify(t)
+                if t2 is None:
+                    continue
+                key = (l_, c_, rt)
+                if rulemap.get(key) != t2:
+                    rulemap[key] = t2
+                    added += 1
+        if added == 0:
+            break
+        n_fp += added
+
+    # 起動×波同時(誕生セル D=0/−1 の 2 系)
+    n_launch = 0
+    for l in ('NG', 'LNG'):
+        if rulemap.get((l, 'M', 'T3')) != 'mS33T3':
+            rulemap[(l, 'M', 'T3')] = 'mS33T3'
+            n_launch += 1
+        if rulemap.get((l, 'MT3', 'L')) != 'mS33':
+            rulemap[(l, 'MT3', 'L')] = 'mS33'
+            n_launch += 1
+    # 発火時の複合解決の補完(fire ->F キーの複合レーン展開。guard 付きで
+    # 追加のみ: 既存 target を壊さない)
+    comps = [lo[h] + p for h in held for p in phn] + [h + p for h in held for p in phn]
+    n_fire = 0
+    fire_keys = [(k, tgt) for k, tgt in rulemap.items() if tgt == 'F']
+    for ((l, X, r), tgt) in fire_keys:
+        cv = lo.get(X.strip())
+        if cv is not None:
+            for v in (cv + p for p in phn):
+                if (l.strip(), v, r.strip()) not in rulemap:
+                    rulemap[(l.strip(), v, r.strip())] = 'F'
+                    n_fire += 1
+        for v in comps:
+            if (v, X.strip(), r.strip()) not in rulemap:
+                rulemap[(v, X.strip(), r.strip())] = 'F'
+                n_fire += 1
+            if (l.strip(), X.strip(), v) not in rulemap:
+                rulemap[(l.strip(), X.strip(), v)] = 'F'
+                n_fire += 1
+    # 最終レーン検査
+    bad = [(k) for k in rulemap for lane in k if lane not in lane_set]
+    if bad:
+        raise SystemExit(f'add_birth: unknown-lane keys: {bad[:5]}')
+    ordered = emit(rulemap, list(rulemap.keys()))
+    write_file(states, pre, post, ordered)
+    print(f'add_birth: states={len(states)} rules={len(ordered)} '
+          f'(birth +{n_rep}rep/{n_add}add, fixpoint {n_fp}, launch {n_launch}, '
+          f'fire {n_fire})')
+
 
 def verify_a1():
     ok = True
