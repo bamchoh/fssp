@@ -25,9 +25,11 @@ struct Config {
     soldier: usize,
     firing: usize,
     external: usize,
-    // 6 ビット/次元のインデックス (l<<12)+(c<<6)+r。状態数最大 64(凍結層の
-    // 複合状態(凍結変状態+横断信号)のために 32 状態上限の 5 ビット表現から拡張)。
-    rules: [u8; 262144],
+    // 7 ビット/次元のインデックス (l<<14)+(c<<7)+r。状態数最大 128(凍結層の
+    // 複合状態(凍結変状態+横断信号、S33 位相 carrier)のために 32→64 状態の
+    // 5→6 ビット表現からさらに拡張。AVX2 gather パスは u16 索引のままなので
+    // 64 状態以下のルールセットに限って有効)。
+    rules: Box<[u8; 1 << 21]>,
 }
 
 fn dump_full(cells: &[u8], config: &Config) {
@@ -99,14 +101,14 @@ fn calc_next(next_cells: &mut [u8], idx: usize, current: &[u8], config: &Config)
 }
 
 fn nextcell(left: u8, center: u8, right: u8, config: &Config) -> u8 {
-    config.rules[((left as usize) << 12) + ((center as usize) << 6) + (right as usize)]
+    config.rules[((left as usize) << 14) + ((center as usize) << 7) + (right as usize)]
 }
 
 fn nextline(cur: &mut [u8], nex: &mut [u8], config: &Config) {
     calc_next(nex, 1, cur, config);
 }
 
-// AVX2 gather パス。u8 表(262144 = 256KB)をバイトオフセットで参照し、
+// AVX2 gather パス。u8 表(64 状態以下のルールセットのみ。索引を u16 に圧縮した
 // gathered dword の下位 1 バイトを状態として回収する。
 #[cfg(target_arch = "x86_64")]
 mod simd {
@@ -211,8 +213,8 @@ mod simd {
         }
         // 端数はスカラーで
         while i < last {
-            nex[i] = rules[((cur[i - 1] as usize) << 12)
-                + ((cur[i] as usize) << 6)
+            nex[i] = rules[((cur[i - 1] as usize) << 14)
+                + ((cur[i] as usize) << 7)
                 + (cur[i + 1] as usize)];
             i += 1;
         }
@@ -222,8 +224,8 @@ mod simd {
 fn nextline_par(ary_pair: &mut AryPair, config: &Config, use_avx2: bool) {
     #[cfg(target_arch = "x86_64")]
     {
-        if use_avx2 {
-            unsafe { simd::step(ary_pair.cur, ary_pair.nex, &config.rules) };
+        if use_avx2 && config.states.len() <= 64 {
+            unsafe { simd::step(ary_pair.cur, ary_pair.nex, &config.rules[..]) };
             return;
         }
     }
@@ -284,7 +286,7 @@ fn parse_rules(line: &str, n: i32, states: &Vec<State>) -> (ParseState, usize, u
     for rule_state in vv {
         for (i, state) in states.iter().enumerate() {
             if rule_state == state.name.as_str() {
-                idx = (idx << 6) + i;
+                idx = (idx << 7) + i;
                 break;
             }
         }
@@ -309,7 +311,7 @@ fn parse_rule_file(s: &String) -> Config {
     let mut parse_state = ParseState::Begin;
     let mut config = Config {
         states: vec![],
-        rules: [0; 262144],
+        rules: vec![0u8; 1 << 21].into_boxed_slice().try_into().unwrap(),
         general: 0,
         soldier: 0,
         firing: 0,
@@ -869,16 +871,27 @@ fn plan_a1_signals(analysis: &FaultAnalysis, config: &Config, a3: bool) -> (Vec<
             }
         }
         // 次の正常区間 I_{i+1} の将軍起動信号(管路の L→R パイプラインを流れて
-        // I_{i+1} の左端セルの左入力に提示される)
+        // I_{i+1} の左端セルの左入力に提示される)。p=1 では会合機械(CA 局所)が
+        // S33/R2 の会合から NG 会合放出を発生させるため注入を廃止:
+        //   S33(1/3 放出)= 細胞 1 の (www,M,L)->S33、R2 = to_left 遠位口の
+        //   TR 装填、会合キーが I1 を S−1+c で通過し {v}NG が 1/1 右走行する。
+        //   管路に入る時刻は注入版と同じ(近位口 pickup t = 2S−m)なので
+        //   I_{i+1} の起動時刻表は変化しない。
+        // ただし会合セル c が I1 内に収まらない配置(c > n1 ⟺ m1 >= n1−1)では
+        // 凍結領域内で会合が成立しないため、注入での代替を残す(後段課題)。
         if let Some(ng) = ng {
-            let t_next = t_i(i + 1);
-            plan.push(PlannedSignal {
-                time: t_next - 1 - (m_i - 1),
-                cell: d.start,
-                to_left: false,
-                value: ng,
-            });
-            notes.push(format!("I{} general launched at t={}", i + 1, t_next));
+            let s1 = n_i + m_i;
+            let c_meet = if s1 % 2 == 0 { s1 / 2 + 1 } else { (s1 + 3) / 2 };
+            if p != 1 || c_meet > n_i {
+                let t_next = t_i(i + 1);
+                plan.push(PlannedSignal {
+                    time: t_next - 1 - (m_i - 1),
+                    cell: d.start,
+                    to_left: false,
+                    value: ng,
+                });
+            }
+            notes.push(format!("I{} general launched at t={}", i + 1, t_i(i + 1)));
         }
     }
     (plan, notes)
@@ -904,6 +917,10 @@ struct FaultField {
     // 壁反射の左走行波 T3 と、起床済みセル上の複合 carrier <X>T3(chateau+signal)。
     // 遠位口 pickup の対象。pickup した複合は純 FT に変換して管路に乗せる。
     t3_carriers: Vec<u8>,
+    // NG 会合放出の保値付き carrier {X}NG(名称が 3 文字で NG で終わる)。
+    // 会合セルから 1/1 右走行して I1 右端に現れたとき、to_right 入口 pickup
+    // (入口セル d1.0 = D1 左端だけ)がこれを管路に乗せる。
+    ng_carriers: Vec<u8>,
     // 故障区間数。to_left 管路への FT 変換 pickup は p=1 のときだけ有効
     // (p>=2 では各区間の解凍は注入 FT で提示され、壁反射波を区間に拾わせると
     //  他区間の波が誤って解凍を起動するため、波は管路の遠位口で消える)
@@ -922,9 +939,14 @@ impl FaultField {
     // 対岸の正常セルの表示 d が管路に乗せる解凍信号(FT)かどうか。
     // 純 FT に加え、壁反射の左走行波 T3 と複合 carrier <X>T3 も対象:
     // 複合は chateau 部分をセル自身に残すので、管路には純 FT を載せる。
+    // TR は I2 左端の fast 継続表示: R2 装填(会合の 1/1 左走行反射信号)の
+    // 源流として素の TR 状態のまま to_left 管路に乗せる(近位口のルール入力に
+    // 1 歩だけ提示され、I1 右端の (F_l, F_v, TR) -> {v}R2 で凍結領域を左走行)。
     fn pickup_thaw(&self, d: u8) -> Option<u8> {
         if Some(d) == self.ft_state || self.t3_carriers.contains(&d) {
             self.ft_state
+        } else if Some(d) == self.tr_state {
+            Some(d)
         } else {
             None
         }
@@ -959,12 +981,27 @@ impl FaultField {
             })
             .map(|(i, _)| i as u8)
             .collect();
+        // NG 会合放出の保値付き carrier {X}NG(3 文字で NG で終わる名前)。
+        let ng_carriers: Vec<u8> = config
+            .states
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| {
+                let name = s.name.trim();
+                name.len() == 3 && name.ends_with("NG")
+            })
+            .map(|(i, _)| i as u8)
+            .collect();
         // 信号層のアイドル値。R→L 管路(I_i 右端セルの右入力)は境界マーカー W
         // を提示する(www だと凍結起動と素の壁反射 (C,L,www)->M が区別できず衝突)。
         // 解凍信号 FT が口を通過した後は FT2(解凍後位相)に切り替わる。
         // L→R 管路(次の区間 I_{i+1} 左端セルの左入力)は www(将軍の boundary
         // 規則 (www,M,*) がそのまま働く)。ルールファイルに W がなければ www。
-        let idle_to_right = config.external as u8;
+        // L→R 管路のアイドル提示: 素の www(将軍の boundary 規則 (www,M,*) が
+        // そのまま働く=以前の挙動)から L に変更。S33 排出 (www,M,L)->複合 が
+        // I_{i+1} 左端の発射後 M 表示でも誤発火するため、管路からの左入力は
+        // 細胞 1 と区別できる L を提示する((L,M,r) ミラー規則を生成する)。
+        let idle_to_right = if signal_only { config.soldier as u8 } else { config.external as u8 };
         let idle_to_left = if signal_only { w_state.unwrap_or(config.external as u8) } else { config.soldier as u8 };
         let mut field = FaultField {
             mask: mask.to_vec(),
@@ -982,6 +1019,7 @@ impl FaultField {
             cb_state,
             tr_state,
             t3_carriers,
+            ng_carriers,
             p,
             d1,
         };
@@ -1040,11 +1078,18 @@ impl FaultField {
                     // 入口 pickup: CB は最初の管路(I1 凍結起動 = fast 信号の始発)
                     // だけで取り込む(I_i (i>=2) の凍結起動 Carrier の表示を拾うと
                     // fast 信号が複製され、各区間の波と衝突する)。TR(fast 継続)は
-                    // どこでも取り込んでよい(fast 継続そのもの)。
-                    if (Some(d) == self.cb_state && cb_ok) || Some(d) == self.tr_state {
+                    // どこでも取り込んでよい(fast 継続そのもの)。NG 会合放出の
+                    // 保値付き carrier {X}NG は会合の始発なので D1 入口だけで
+                    // 取り込む(p=1 の管路と同じ制約)。
+                    if (Some(d) == self.cb_state && cb_ok)
+                        || Some(d) == self.tr_state
+                        || (self.ng_carriers.contains(&d) && cb_ok)
+                    {
                         d
                     } else {
-                        config.external as u8
+                        // アイドル充填: L→R 管路は L を提示する((www,M,L) との
+                        // 誤発火回避、new_ctx の idle_to_right と同じ理屈)
+                        if self.signal_only { config.soldier as u8 } else { config.external as u8 }
                     }
                 } else {
                     current[c - 1]
@@ -1117,7 +1162,7 @@ impl FaultField {
                 next_cells[c] = if self.frozen[c] {
                     current[c] // 凍結: 状態変化を止めて保持
                 } else {
-                    config.rules[((left as usize) << 12) + ((current[c] as usize) << 6) + (right as usize)]
+                    config.rules[((left as usize) << 14) + ((current[c] as usize) << 7) + (right as usize)]
                 };
             }
         }
@@ -1699,14 +1744,15 @@ mod tests {
             st("S", ""),
             st("G", "general"),
         ];
-        let mut rules = [0u8; 262144];
+        let mut rules: Box<[u8; 1 << 21]> =
+            vec![0u8; 1 << 21].into_boxed_slice().try_into().unwrap();
         for l in 0u8..4 {
             for r in 0u8..4 {
                 // 中心 Q: 隣に S がいれば S になる(両方向 1/1 進行)、いなければ Q
-                rules[((l as usize) << 12) + (1 << 6) + (r as usize)] =
+                rules[((l as usize) << 14) + (1 << 7) + (r as usize)] =
                     if l == 2 || r == 2 { 2 } else { 1 };
                 // 中心 S: 発信して Q に戻る
-                rules[((l as usize) << 12) + (2 << 6) + (r as usize)] = 1;
+                rules[((l as usize) << 14) + (2 << 7) + (r as usize)] = 1;
             }
         }
         Config {

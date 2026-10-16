@@ -328,7 +328,15 @@ def cells(row):
 
 
 def golden_rows(n):
+    # 会合機械入りルールの障害なし走行(凍結ケースの基準。機械自身の
+    # S33 排出表示も期待どおりに含むことに注意)
     return state_rows(run(BIN, ['-r', OUT_RULE, '-s', str(n), '-d']))
+
+
+def golden_base(n):
+    # 素の balzer の障害なし走行(A1 の基準 choreography。会合機械は
+    # 凍結機械と同居するため、I1 の基準には素のルールセットを使う)
+    return state_rows(run(BIN, ['-r', BASE_RULE, '-s', str(n), '-d']))
 
 
 def expected_grid(gold, n, t1, dt):
@@ -491,21 +499,85 @@ def a1_expected(gold1_c, gold2_c, n1, m1, n2):
     t1 = n1 - 1
     dt = 2 * m1 + 2 * n2
     T2 = 2 * (n1 + m1)
+    S = n1 + m1
+    # 会合セルと NG 出発時刻(会合メカニズム最終形、T0=1 表示時刻系)。
+    #   偶数 S: c = S/2+1、会合キー (R2 が右隣) → NG 表示 t = 3S/2
+    #   奇数 S: c = (S+3)/2、会合キー (R2 が中央) → NG 表示 t = (3S+1)/2
+    # c = S−1+c = t_dep が M@2S の判定式と一致する唯一の会合セル。
+    c_m = S // 2 + 1 if S % 2 == 0 else (S + 3) // 2
+    t_dep = S - 1 + c_m
+    # 会合が I1 に収まらない配置(m1 >= n1−1)では従来模型のまま(注入代替)
+    meet_ok = c_m <= n1
+    ph = ['S33', 'S3A', 'S3B']
     rows = []
     for t in range(0, 2 * n - 2 + 1):
         row = []
         for x in range(1, n + 1):
             if x <= n1:
                 f_ = t1 + (n1 - x)
+                v_x = gold1_c[f_ - 1][x - 1].strip() if f_ >= 1 else 'L'
+                d = None
                 if t < f_:
-                    row.append(gold1_c[t][x - 1])
+                    d = gold1_c[t][x - 1]
                 elif t < f_ + dt:
                     if x == n1 and t == f_ and n1 >= 2:
-                        row.append('CB')  # 境界の1ステップCarrier
+                        d = 'CB'  # 境界の1ステップCarrier
                     else:
-                        row.append('F' + gold1_c[f_ - 1][x - 1])
+                        d = 'F' + v_x
                 else:
-                    row.append(gold1_c[t - dt][x - 1])
+                    d = gold1_c[t - dt][x - 1]
+                # S33 journey(tau(x) = 3x−2 に 3 歩滞在)。会合が成立する配置では
+                # x <= c−1、不成立帯(c > n1)では journey 全長 x <= n1。
+                # 内部複合 = 小文字(choreography 仮想値を運ぶ)、
+                # 氷結複合 = 大文字(F_v 一定)。off = f−tau = 2n1+1−4x ≡ 奇数で
+                # 交差は off ∈ {1, 3} のみ(off 0/2 は構造的に起こらない)。
+                j_max = c_m - 1 if meet_ok else n1
+                if meet_ok and c_m <= x <= n1 and t < f_ + dt:
+                    # NG 会合放出(1/1 右走行)。会合セル(奇数 S)は journey の
+                    # 再点火を防ぐため 2 歩表示、それ以降(c より右)は 1 歩
+                    if x == c_m and S % 2 == 1:
+                        if t in (t_dep, t_dep + 1):
+                            d = f'{v_x}NG'
+                    elif t == t_dep + (x - c_m):
+                        d = f'{v_x}NG'
+                if x <= j_max:
+                        tau = 3 * x - 2
+                        off = f_ - tau
+                        if off <= -1:
+                            # 到来前に凍結済み: 保値付き位相 carrier
+                            if tau <= t <= tau + 2:
+                                d = f'{v_x}{ph[t - tau]}'
+                        elif off >= 4:
+                            # 滞在完了後に前線が届く: 内部複合で choreography を
+                            # 仮想計算し続ける(表示は.golden 値の複合)
+                            if tau <= t <= tau + 2:
+                                d = gold1_c[t][x - 1].strip().lower() + ph[t - tau]
+                        elif off == 1:
+                            # 発火表示の翌ステップで氷結複合へ(held = gold[f−1])
+                            if t == tau:
+                                d = gold1_c[tau][x - 1].strip().lower() + 'S33'
+                            elif t == tau + 1:
+                                d = gold1_c[tau][x - 1].strip() + 'S3A'
+                            elif t == tau + 2:
+                                d = gold1_c[tau][x - 1].strip() + 'S3B'
+                            # t >= tau+3 は標準 F 表示('F'+v_x)に合流
+                        else:  # off == 3
+                            # 滞在 3 歩完了 → ph2 が x+1 の触発と氷結復帰を兼ねる
+                            # (t = tau+3 = f_ は標準 'F'+v_x と一致)
+                            if tau <= t <= tau + 2:
+                                d = gold1_c[t][x - 1].strip().lower() + ph[t - tau]
+                # R2(1/1 左走行、表示は 1 歩)。会合は吸収するので(奇数 S では
+                # 会合セル自身、偶数 S ではその右隣まで)。会合不成立帯では R2 は
+                # I1 末端(=会合セル候補)の journey 保値復帰の瞬間に重なって吸収
+                # され、以後 carrier が発生しないのでどこにも表示されない。
+                # 滞在中に重なる 4x ∈ {2S, 2S+2} のセルでは carrier 表示が優先
+                # (R2 は表示されずに消える)
+                if meet_ok and x >= 1 and t < f_ + dt and t == 2 * S + 1 - x:
+                    r2_lo = c_m if S % 2 == 1 else c_m + 1
+                    if x >= r2_lo and d not in (
+                            None, 'CB') and not d.endswith(('S33', 'S3A', 'S3B')):
+                        d = f'{v_x}R2'
+                row.append(d)
             elif x <= n1 + m1:
                 row.append('L')
             else:
@@ -677,12 +749,328 @@ def add_composite():
           f'(+{n_release} release +{n_absorb} absorb +{n_asleep} asleep)')
 
 
+def add_meeting():
+    # 会合メカニズム(MEMO「会合メカニズム最終形」実装、2026-10-16 解析+実装検算)。
+    #   S33(1/3 信号): 論文の 1/3 放出の CA 局所化=細胞 1 の将軍が
+    #     (www, M, L) -> 複合(仮想値 M+S33)で t=1 に放出(T0=1、表示時刻系
+    #     tau(x) = 3x-2、滞在 3 歩 S33->S3A->S3B、各 1 歩表示)。
+    #   複合 carrier は 2 種:
+    #     内部複合 lo[X]+ph(小文字): choreography 表示 X+信号。位相進行のたびに
+    #       仮想値を f(l,X,r)(現行 rulemap をオラクルに使用)で計算し続けるので、
+    #       滞在中も choreography が正確に進み、復帰 (l, 複合S3B, r) -> f(l,X,r)
+    #       でシームレスに合流する(氷結前線との干渉なし)。
+    #     氷結複合 X+ph(大文字 = F_v+信号): 凍結セル上は仮想値一定 v。
+    #   R2(反射信号の I1 極性版): to_left 遠位口の TR 装填(rust 側)から 1/1 左走行、
+    #     表示 rho(x) = 2S+1-x。会合は時間一致が 4x=2S+2(S 偶数: R2 右隣キー,
+    #     c = S/2+1)/4x=2S+3(S 奇数: R2 中央キー, c=(S+3)/2)で排他的に一致する。
+    #   NG 会合放出: 会合セルで 1 歩表示(奇数 S は 2 歩: 左隣 ph2 触発の再点火防止)
+    #     し、1/1 右走行して I1 右端から to_right 入口 pickup(rust 側)で管路へ。
+    # 交差(off = f-tau = 2n1+1-4x ≡ 奇数)は off ∈ {1, 3} のみ(off 0/2 は不可能)。
+    #   off=1: 発火表示の次ステップで氷結複合へ(off>=1 なので発火は完了)。
+    #   off=3: 滞在 3 歩完了後、ph2 表示が x+1 の触発と held=gold[f-1] への復帰を
+    #     同時に担う(= 標準 F 表示にそのまま合流)。
+    # 追加状態 = 内部複合 21 + 氷結複合 21 + R2 7 + NG 7 = 56 → 計 87 状態。
+    states, rules, pre, post = load(OUT_RULE)
+    rulemap = parse_rules(rules)
+    names = [state_name(s) for s in states]
+    held = ['A', 'B', 'C', 'L', 'M', 'Q', 'R']   # 保値/choreography 7
+    fv = ['F' + s for s in held]
+    lo = {h: h.lower() for h in held}
+    phn = ('S33', 'S3A', 'S3B')
+    color = {'R2': 'E07820', 'NG': '50C050'}
+    new = ([lo[h] + ph for h in held for ph in phn]
+           + [h + ph for h in held for ph in phn]
+           + [h + 'R2' for h in held] + [h + 'NG' for h in held])
+    for nm in new:
+        if nm not in names:
+            c = color.get(nm[-3:], 'B070C0')
+            if nm.endswith('S33') or nm.endswith('S3A') or nm.endswith('S3B'):
+                c = 'D8C840' if nm[0].islower() else '40A8C8'
+            states.append(pad(nm) + f'@101010,{c},others')
+            names.append(nm)
+    n_override = [0]
+
+    def put(key, target):
+        if target is None:
+            return  # オラクル未定義キー: discover_a1 の合成に任せる
+        if rulemap.get(key) != target:
+            if key in rulemap:
+                n_override[0] += 1
+            rulemap[key] = target
+
+    def F(l, X, r):
+        # 現行ルール表を choreography 遷移のオラクルとして使う
+        # (add_a1/discover で合成済みの (l,X,r) キー、境界の W/www 提示を含む)。
+        # choreography 内部状態以外の返値(CB などの一過性 carrier)は複合の
+        # 仮想値にならないので None 扱い(discover_a1 の合成に任せる)
+        t = rulemap.get((l, X, r))
+        return t if t in held else None
+
+    # -- S33 誕生(細胞 1 の将軍、t=1 表示)= 論文の 1/3 放出 -------------------
+    cur0 = rulemap.get(('www', 'M', 'L'))
+    if isinstance(cur0, str) and cur0[:1].islower():
+        put(('www', 'M', 'L'), cur0)  # 再実行: 既に排出複合のまま
+    else:
+        L0 = (F('www', 'M', 'L') or 'M').strip()  # 理論値: 細胞1の golden 表示
+        put(('www', 'M', 'L'), lo[L0] + 'S33')
+    # 細胞1は発射後も M 表示を継続(golden)。右隣は S33/R2/NG の複合表示
+    for r in ([lo[h] + ph for h in held for ph in phn]
+              + [h + ph for h in held for ph in phn]):
+        put(('www', 'M', r), 'M')
+    # -- 発火(左隣の ph2 複合が自身の仮想値を運ぶ)----------------------------
+    # 内部受信: 仮想値を 1 歩進めて複合を開始
+    for X in held:
+        for Y in held:
+            for r in held + ['W']:
+                t0 = F(X, Y, r)
+                if t0 is None:
+                    continue  # 未定義キーは discover_a1 が合成する
+                put((lo[X] + 'S3B', Y, r), lo[t0] + 'S33')
+        # 氷結受信(交差境界 y)と氷結領域内の伝播(保値 v のまま複合開始)
+        for v in held:
+            for r in fv + ['W', 'CB', 'TR']:
+                put((lo[X] + 'S3B', 'F' + v, r), v + 'S33')
+                put((X + 'S3B', 'F' + v, r), v + 'S33')
+    # -- 内部複合の位相進行と復帰(仮想値を choreography どおり進める)---------
+    for X in held:
+        for l in ['www'] + held:
+            for r in held:
+                t1 = F(l, X, r)
+                if t1 is None:
+                    continue  # 未定義キーは discover_a1 が合成する
+                put((l, lo[X] + 'S33', r), lo[t1] + 'S3A')
+                put((l, lo[X] + 'S3A', r), lo[t1] + 'S3B')
+                put((l, lo[X] + 'S3B', r), t1)  # 復帰 = choreography の次状態
+    # -- 交差(右隣が凍結表示 = 前線が滞在中に到達): 氷結複合へ切替 ------------
+    # held = 発火時の仮想値(= gold[f-1])なので復帰後の F 表示とも一致する
+    for X in held:
+        for l in ['www'] + held:
+            for r in fv + ['CB']:
+                put((l, lo[X] + 'S33', r), X + 'S3A')
+                put((l, lo[X] + 'S3A', r), X + 'S3B')
+                put((l, lo[X] + 'S3B', r), 'F' + X)
+    # -- 氷結複合の進行(保値一定)と復帰 --------------------------------------
+    for X in held:
+        for l in ['www'] + held + fv:
+            for r in fv + held + ['W', 'CB', 'TR']:
+                put((l, X + 'S33', r), X + 'S3A')
+                put((l, X + 'S3A', r), X + 'S3B')
+                put((l, X + 'S3B', r), 'F' + X)
+    # -- 待機ホスト(左隣が ph0/ph1 を表示中): choreography は仮想値で計算 ----
+    # 内部ホスト: 自身の表示 Y を 1 歩進める(左隣の仮想値 X を左入力に使う)
+    for X in held:
+        for Y in held:
+            for r in held + ['W']:
+                for ph in ('S33', 'S3A'):
+                    put((lo[X] + ph, Y, r), F(X, Y, r))  # None は put で握り潰す
+        # 氷結ホスト / 氷結領域の保持(複合の左隣は自分に影響しない)。
+        # ph2 は右隣の触発なので保持に入れない(発火族との競合を避ける)
+        for ph in ('S33', 'S3A'):
+            for v in held:
+                for r in fv + ['W', 'CB', 'TR']:
+                    put((lo[X] + ph, 'F' + v, r), 'F' + v)
+                    put((X + ph, 'F' + v, r), 'F' + v)
+    # -- 波の右側の隣接セル(左隣が複合を表示中): choreography は左隣の仮想値
+    #    を右入力に使って進む(複合 = choreography+signal の透過性)--------------
+    fheld = ['www'] + fv
+    lowall = [lo[h] + ph for h in held for ph in phn]
+    upall = [h + ph for h in held for ph in phn]
+    for X in held:
+        for l in ['www'] + held:
+            for c in held:
+                for ph in phn:
+                    put((l, c, lo[X] + ph), F(l, c, X))
+                    put((l, c, X + ph), F(l, c, X))  # 右隣が氷結複合のときも同様
+# (会合直前/直後は r が NG/R2 複合になる)
+    # r = NG 複合(会合セル直前の復帰: 自己仮想値 X を中央に置き w を右隣に見る)
+    for X in held:
+        for l in ['www'] + held + fv + [h + 'NG' for h in held]:
+            for w in held:
+                put((l, lo[X] + 'S3B', w + 'NG'), F(l, X, w))
+                put((l, X + 'S3B', w + 'NG'), 'F' + X)  # 氷結複合側の復帰(会合右)
+# 会合直後: 位相進行の r-lane も NG/R2 複合(会合セル直前 c−1 の位相進行は
+# NG/R2 表示と同時に起きる。l は凍結複合も含む=氷結stretchの左隣が凍結表示)
+    for X in held:
+        for l in ['www'] + held + fv:
+            for w in held:
+                for ph in ('S33', 'S3A'):
+                    put((l, lo[X] + ph, w + 'NG'), lo[F(l, X, w) or X] + (phn[1] if ph == phn[0] else phn[2]))
+                    put((l, X + ph, w + 'NG'), X + (phn[1] if ph == phn[0] else phn[2]))
+                    # R2 複合が右隣に来ても滞在は予定どおり進む(R2 は消える:
+                    # 会合で吸収/会合不成立帯では以後無意味)。R2 の 1/1 表示が
+                    # 滞在中に重なるのは 4x ∈ {2S, 2S+2} の c−1 だけ
+                    put((l, lo[X] + ph, w + 'R2'), lo[F(l, X, w) or X] + (phn[1] if ph == phn[0] else phn[2]))
+                    put((l, X + ph, w + 'R2'), X + (phn[1] if ph == phn[0] else phn[2]))
+    # r = 複合(内部/氷結)を左隣に見る凍結ホストの保持(ph は右隣レーンとして
+    # 全位相を許す。fire 族は複合を左隣に取る形なので競合しない))
+    for X in held:
+        for l in (['www'] + held + fv
+                  + [lo[h2] + ph for h2 in held for ph in ('S33', 'S3A', 'S3B')]
+                  + [h2 + ph for h2 in held for ph in ('S33', 'S3A', 'S3B')]):
+            for v in held:
+                for ph in ('S33', 'S3A', 'S3B'):
+                    put((l, 'F' + v, X + ph), 'F' + v)
+                    put((l, 'F' + v, lo[X] + ph), 'F' + v)
+            for v in held:
+                for w in held:
+                    put((l, 'F' + v, w + 'NG'), 'F' + v)   # NG の左隣の保持
+                    put((l, 'F' + v, w + 'R2'), 'F' + v)   # R2 の左隣の保持
+
+    # -- 標準の前線/ホールド族に複合を左隣に見るレーンを足す(journey 中のセルの
+    #    左隣が複合のときも前線は予定時刻どおり点火する)
+    for l in [lo[h] + ph for h in held for ph in phn] +              [h + ph for h in held for ph in phn]:
+        for c in held:
+            for r in fv + ['FS', 'CB']:
+                put((l, c, r), 'F' + c)
+
+    # -- 前線は氷結複合表示を透過する(off=1 交差セルの表示が右端になった直後、
+    #    左隣の前線が予定時刻どおり点火できるように: (l, c, 氷結複合ph1/2) -> F(c))
+    for X in held:
+        for l in ['www', 'L', 'M'] + held + fv +                  [lo[h] + ph for h in held for ph in phn] +                  [h + ph for h in held for ph in phn]:
+            for c in held:
+                put((l, c, X + 'S3A'), 'F' + c)
+                put((l, c, X + 'S3B'), 'F' + c)
+
+    # -- 管路の L→R アイドルは L を提示する(rust 側)。I_{i+1} 左端の
+    #    (www, M, r) 境界規則を (L, M, r) にミラーする(ただし S33 排出を
+    #    除く: (www, M, L) のみ排出、(L, M, r) はすべて保持)
+    for r in (['L', 'www'] + held + fv
+              + [lo[h] + ph for h in held for ph in phn]
+              + [h + ph for h in held for ph in phn]
+              + ['T3'] + [h + 'T3' for h in held]):
+        t0 = rulemap.get(('www', 'M', r))
+        # S33 排出(composite を返す (www, M, L))以外をミラーする。排出は保持
+        # (M)に置き換える(過去実行で汚染された (L,M,r) を必ず修復する)
+        is_journey = isinstance(t0, str) and (t0.endswith('S33') or t0.endswith('S3A') or t0.endswith('S3B'))
+        put(('L', 'M', r), 'M' if (is_journey or t0 is None) else t0)
+    # I_{i+1} 左端の起床前保持 (L, L, r) -> L(既存規則の確認、なければ補完)
+    for r in ['L', 'www']:
+        put(('L', 'L', r), 'L')
+    # 凍結起動 CB トリガ (X, L, W) -> CB と、その復帰 (X, CB, W) -> FL を
+    # journey 複合左隣にも複製する(n1 = 2 など短縮ケース: 細胞 n1 の左隣が
+    # S33 複合表示の瞬間に起動/復帰する)
+    for (a, b, c), y in list(rulemap.items()):
+        if c != 'W' or b not in ('L', 'CB'):
+            continue
+        for h in held:
+            for ph in ('S33', 'S3A', 'S3B'):
+                put((lo[h] + ph, b, c), y)
+                put((h + ph, b, c), y)
+    # www-lane の残り(管路の左入力がwwwを提示するルールがまだある場合)を
+    # L-lane にミラーする。除外: 排出(www,M,L)と journey 複合ターゲット/レーン
+    for (a, b, c), y in list(rulemap.items()):
+        if a != 'www':
+            continue
+        if y is None or not isinstance(y, str):
+            continue
+        if (b, c) == ('M', 'L'):
+            continue  # 排出キー
+        if y.endswith('S33') or y.endswith('S3A') or y.endswith('S3B'):
+            continue
+        if b.endswith('S33') or b.endswith('S3A') or b.endswith('S3B'):
+            continue
+        put(('L', b, c), y)
+
+    # -- R2(1/1 左走行、凍結 I1 のみ、rho(x)=2S+1-x)---------------------------
+    for l in fv:
+        for v in held:
+            put((l, 'F' + v, 'TR'), v + 'R2')        # n1 右端での装填
+    fheld = ['www'] + fv
+    for r in ['W'] + fv:
+        for l in fheld:
+            for v in held:
+                put((l, 'F' + v, r), 'F' + v)         # R2 未到来の保持
+    r2set = [h + 'R2' for h in held]
+    # 左走行伝播: トリガは右隣の R2 carrier 表示。l = F_v / www(会合不成立帯)
+    for l in fheld:
+        for w in held:
+            for s in held:
+                put((l, 'F' + w, s + 'R2'), w + 'R2')
+    # R2 の左隣(通過済み側)の保持
+    for l in r2set:
+        for w in held:
+            for r in ['TR', 'W'] + fv:
+                put((l, 'F' + w, r), 'F' + w)
+    for l in fheld:
+        for v in held:
+            for r in ['TR', 'W'] + fv:
+                put((l, v + 'R2', r), 'F' + v)         # 1 歩表示後の復帰
+    # -- 会合キー(M@2S 判定式 t_dep = S-1+c に一致する唯一の時間一致)----------
+    for v in held:
+        for w in held:
+            for s in held:
+                # S 偶数: R2 が会合セルの右隣に来た瞬間(細胞 c-1 は滞在 1 歩目)
+                put((v + 'S3A', 'F' + w, s + 'R2'), w + 'NG')
+                # S 奇数: R2 が会合セル自身に来た瞬間(細胞 c-1 は滞在 0 歩目)。
+            # 会合セル = n1(m1 = n1-1)では右隣は管路の W/L 提示
+                for r in fv + ['W', 'L']:
+                    put((v + 'S33', w + 'R2', r), w + 'NG')
+    # -- NG 会合放出(1/1 右走行)と I2 左端の起動 -----------------------------
+    for v in held:
+        for w in held:
+            for r in ['W', 'TR'] + fv:
+                put((v + 'NG', 'F' + w, r), w + 'NG')   # 右走行伝播
+                put((v + 'NG', 'L', 'L'), 'M')           # I2 左端の起動
+                put((v + 'NG', 'L', 'www'), 'F')         # I2=1 セル区間の起動
+                # I2 左端が T3 通過中(未起床=純 T3 / 起床済み=複合)のこともある
+                for c2 in ['T3'] + [h2 + 'T3' for h2 in held]:
+                    put((v + 'NG', c2, 'L'), 'M')
+                    put((v + 'NG', c2, 'www'), 'F')
+                # 会合セル(奇数 S)の NG 2 歩表示: 細胞 c-1 の ph2 触発による
+                # journey 再点火を防ぐ(ph0 を左隣に持つ NG 表示は存在しない)
+                for l in held:
+                    put((l + 'S3A', w + 'NG', r), w + 'NG')
+    # thaw の FT-lane: 凍結複合表示中に解凍信号 FT が届いたら、その保値の
+    # (X, F_v, FT) 準拠の thaw 遷移に落とし込む(cell2@n1 の thaw が STAY 直後
+    # に重なるケース)
+    for l in (fheld
+              + [lo[h] + ph for h in held for ph in phn]
+              + [h + ph for h in held for ph in phn]
+              + [h + 'NG' for h in held]
+              + [h + 'R2' for h in held]):
+        for v in held:
+            if l.endswith('NG'):
+                # NG の左隣はその保値の F 表示と同じ扱い(BNG = F(B) に相当)
+                t0 = rulemap.get(('F' + l[0], 'F' + v, 'FT'))
+            elif l.endswith('R2'):
+                t0 = rulemap.get(('F' + l[0], 'F' + v, 'FT'))
+            else:
+                t0 = rulemap.get((l, 'F' + v, 'FT'))
+            if t0 is None:
+                t0 = rulemap.get((l, 'F' + v, 'www'))  # FT2 類似の既知遷移があれば代用
+            for ph in phn:
+                put((l, lo[v] + ph, 'FT'), t0)
+                put((l, v + ph, 'FT'), t0)
+        # NG/R2 の左隣は凍結表示 (F_v) のこともある(thaw が重なる配置):
+        # 保値に対応する素の (F_l, F_v, FT) thaw 規則の複製
+        for v in held:
+            t0 = rulemap.get(('F' + l[0], 'F' + v, 'FT')) if                 (l.endswith('NG') or l.endswith('R2')) else                 rulemap.get((l, 'F' + v, 'FT'))
+            if t0 is not None:
+                put((l, 'F' + v, 'FT'), t0)
+
+    # NG 波の左隣の保持: I2 左端の発射後 M 表示は (NG, M, r) -> M を要求する
+    for l in [h + 'NG' for h in held]:
+        put((l, 'M', 'L'), 'M')
+        put((l, 'M', 'C'), 'M')
+        put((l, 'M', 'www'), 'M')
+    # NG の表示後の復帰(左隣は氷結複合 ph2 / NG 複合 / 凍結表示 / 境界提示、
+    # 右隣は凍結表示のほか次の NG 複合表示もあり得る)
+    for l in (fheld + [h + 'S3B' for h in held]
+              + [h + 'NG' for h in held]):
+        for v in held:
+            for r in ['W', 'TR'] + fv + [h + 'NG' for h in held]:
+                put((l, v + 'NG', r), 'F' + v)
+    ordered = emit(rulemap, list(rulemap.keys()))
+    write_file(states, pre, post, ordered)
+    print(f'add_meeting: states={len(states)} rules={len(ordered)} '
+          f'(overrides={n_override[0]})')
+
 def verify_a1():
     ok = True
     for (n1, m1, n2) in A1_CASES:
         n = n1 + m1 + n2
-        gold1_c = [cells(row) for row in golden_rows(n1)]
-        gold2_c = [cells(row) for row in golden_rows(n2)]
+        gold1_c = [cells(row) for row in golden_base(n1)]
+        gold2_c = [cells(row) for row in golden_base(n2)]
         exp = a1_expected(gold1_c, gold2_c, n1, m1, n2)
         act, _ = run_a1(n1, m1, n2)
         bad = 0
@@ -719,8 +1107,8 @@ def discover_a1():
         additions = {}
         for (n1, m1, n2) in A1_CASES_LOCAL:
             n = n1 + m1 + n2
-            gold1_c = [cells(row) for row in golden_rows(n1)]
-            gold2_c = [cells(row) for row in golden_rows(n2)]
+            gold1_c = [cells(row) for row in golden_base(n1)]
+            gold2_c = [cells(row) for row in golden_base(n2)]
             exp = a1_expected(gold1_c, gold2_c, n1, m1, n2)
             act, text = run_a1(n1, m1, n2)
             rr, ll = stream_rows(text)
@@ -1085,7 +1473,7 @@ def sweep_a1():
 if __name__ == '__main__':
     cmd = sys.argv[1] if len(sys.argv) > 1 else 'verify'
     {'gen': gen, 'discover': discover, 'verify': verify, 'add_a1': add_a1,
-     'add_composite': add_composite,
+     'add_composite': add_composite, 'add_meeting': add_meeting,
      'verify_a1': verify_a1, 'discover_a1': discover_a1,
      'sweep_a1': sweep_a1,
      'sweep_a2': sweep_a2, 'verify_seg': verify_seg,
