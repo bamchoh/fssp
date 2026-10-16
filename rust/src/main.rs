@@ -871,32 +871,43 @@ fn plan_a1_signals(analysis: &FaultAnalysis, config: &Config, a3: bool) -> (Vec<
             }
         }
         // 次の正常区間 I_{i+1} の将軍起動信号(管路の L→R パイプラインを流れて
-        // I_{i+1} の左端セルの左入力に提示される)。p=1 では会合機械(CA 局所)が
-        // S33/R2 の会合から NG 会合放出を発生させるため注入を廃止:
-        //   S33(1/3 放出)= 細胞 1 の (www,M,L)->S33、R2 = to_left 遠位口の
-        //   TR 装填、会合キーが I1 を S−1+c で通過し {v}NG が 1/1 右走行する。
-        //   管路に入る時刻は注入版と同じ(近位口 pickup t = 2S−m)なので
-        //   I_{i+1} の起動時刻表は変化しない。
-        // ただし会合セル c が I1 内に収まらない配置(c > n1 ⟺ m1 >= n1−1)では
-        // 凍結領域内で会合が成立しないため、注入での代替を残す(後段課題)。
+        // I_{i+1} の左端セルの左入力に提示される)。p=1 では全配置が会合機械
+        // (CA 局所)で扱えるとは限らない(dt <= S では放出波が解凍前線に吸収
+        // されるので注入での代替を残す=後段課題)。
+        // p>=2 でも I_i 対 D_i 対 I_{i+1} は p=1 と同じ対面幾何なので、
+        // 同じ会合機械(規則層の規則は時刻に依存しない=そのまま再利用)で
+        // 処理できる。配信可能条件は p=1 のもののペア版:
+        //   - 会合セル c_m <= n_i(管路への装填は S3A+TR 同時放出キーで c=n1 でも可)
+        //   - dt > S_i で起動波が解凍前線に吸収されない
+        //   - n_{i+1} != 1(n_{i+1}=1 では壁反射が R2 装填のポート提示を奪う)
         if let Some(ng) = ng {
             let s1 = n_i + m_i;
             let c_meet = if s1 % 2 == 0 { s1 / 2 + 1 } else { (s1 + 3) / 2 };
-            // 会合機械が I_{i+1} 起動を配信できる条件(p=1):
-            //   - 会合セルが I1 内(c_meet <= n1)。偶数 S で c = n1 のときは
-            //     S3A+TR の同時放出キーが担う(規則層)。
-            //   - 放出波が解凍前線に追いつかれない: t_NG(x) < f_x+dt の全 x は
-            //     dt > S と同値(dt <= S では {v}NG は y = n1+(dt−S)/2 で吸収、
-            //     会合セル自身の解凍とも重なる)。規則層は前線が勝つ側に合わせて
-            //     あるので、この一族では注入での代替を残す(後段課題)。
-            //   - n_{p+1} = 1 では I_{p+1} 右端の壁反射が R2 装填 TR のポート提示
-            //     を奪い(T3 が優先)、会合機械自体が成立しない。
-            let n_last2 = sizes[sizes.len() - 1];
-            let deliverable = 2 * m_i + 2 * n_last2 > s1;
-            if p != 1 || c_meet > n_i || !deliverable || n_last2 == 1 {
-                let t_next = t_i(i + 1);
+            let n_next = sizes[2 * i];
+            // A3 (Thm.4) は時刻系に +(i−1) のオフセットを足すため会合放出の
+            // 配信時刻が 1 ステップ早くなる。会合機械は A1/A2 の時刻系なの
+            // で、A3 モードでは注入のまま(残課題: A3 対応の放出キー)。
+            // to_left 遠位口の TR pickup は D1 だけ有効(残課題②-A2 で per-pipe 化
+            // するまでは i>=2 の対は会合機械が走らないので注入を残す)。
+            let pair_deliverable = !a3
+                && i == 1
+                && c_meet <= n_i
+                && 2 * m_i + 2 * n_next > s1
+                && n_next != 1;
+            let s1_last = sizes[sizes.len() - 1];
+            let deliverable = 2 * m_i + 2 * s1_last > s1;
+            if p == 1 {
+                if c_meet > n_i || !deliverable || s1_last == 1 {
+                    plan.push(PlannedSignal {
+                        time: t_i(i + 1) - 1 - (m_i - 1),
+                        cell: d.start,
+                        to_left: false,
+                        value: ng,
+                    });
+                }
+            } else if !pair_deliverable {
                 plan.push(PlannedSignal {
-                    time: t_next - 1 - (m_i - 1),
+                    time: t_i(i + 1) - 1 - (m_i - 1),
                     cell: d.start,
                     to_left: false,
                     value: ng,
@@ -925,6 +936,7 @@ struct FaultField {
     ft2_state: Option<u8>, // 解凍後のアイドル提示(σ 線上の壁反射と凍結起動の区別)
     cb_state: Option<u8>,  // 境界 Carrier(fast 信号の管路 entry pickup 対象)
     tr_state: Option<u8>,  // fast 継続の対岸横断状態
+    a3: bool,              // A3 時刻系(会合機械の規則を凍結する)
     // 壁反射の左走行波 T3 と、起床済みセル上の複合 carrier <X>T3(chateau+signal)。
     // 遠位口 pickup の対象。pickup した複合は純 FT に変換して管路に乗せる。
     t3_carriers: Vec<u8>,
@@ -964,7 +976,7 @@ impl FaultField {
     }
 
     fn new(mask: &[bool], config: &Config, signal_only: bool) -> FaultField {
-        Self::new_ctx(mask, config, signal_only, 0, None)
+        Self::new_ctx(mask, config, signal_only, 0, None, false)
     }
 
     fn new_ctx(
@@ -973,6 +985,7 @@ impl FaultField {
         signal_only: bool,
         p: usize,
         d1: Option<(usize, usize)>,
+        a3: bool,
     ) -> FaultField {
         let n = mask.len() - 2;
         let w_state = find_state_index(config, "W");
@@ -1033,6 +1046,7 @@ impl FaultField {
             ng_carriers,
             p,
             d1,
+            a3,
         };
         // 壁は故障ではない
         field.mask[0] = false;
@@ -1112,10 +1126,14 @@ impl FaultField {
                     let inbound = if self.mask[c + 1] {
                         self.to_left[c + 1]
                     } else {
-                        // m == 1: 対岸の正常セルの表示からの遠位口 pickup
-                        // (p=1 かつ D1 の口のときだけ。p>=2 では注入で提示する)
-                        let allowed = self.p == 1
-                            && self.d1.map_or(true, |(_, e)| c == e);
+                        // m == 1: 対岸の正常セルの表示からの遠位口 pickup。
+                        //   p=1: FT 変換(解凍)と TR (R2 装填の源流) とも有効。
+                        //   p>=2(非 A3): TR (会合放出=R2 源流) のみ有効。残課題② で
+                        //                区間識別をつけて FT 変換 pickup も開放する。
+                        //   A3: 会合機械の時刻系がずれるので有効にしない。
+                        let allowed = self.d1.map_or(true, |(_, e)| c == e)
+                            && (self.p == 1
+                                || (Some(current[c + 1]) == self.tr_state && !self.a3));
                         match if allowed { self.pickup_thaw(current[c + 1]) } else { None } {
                             Some(v) => v,
                             None => config.external as u8,
@@ -1141,12 +1159,12 @@ impl FaultField {
                 } else if self.mask[c + 1] {
                     self.to_left[c + 1]
                 } else if self.signal_only {
-                    // 遠位口 pickup(対岸の正常セルの表示から取り込む):
-                    // 左走行解凍信号(FT / T3 / 複合 <X>T3)の到着を 1/1 で
-                    // 管路に乗せ、複合は純 FT に変換する。p=1 かつ D1 の口
-                    // のときだけ有効(他の区間の波はここで消える)。
-                    let allowed = self.p == 1
-                        && self.d1.map_or(true, |(_, e)| c == e);
+                    // m >= 2 管路の遠位口 pickup(対岸の正常セルの表示から取り込む:
+                    // 左走行解凍信号 FT / T3 / 複合 <X>T3 は p=1 かつ D1 の口のとき
+                    // だけ。p>=2 では TR(R2 装填の源流)のみ、D1 の口のとき許す。
+                    let allowed = self.d1.map_or(true, |(_, e)| c == e)
+                        && (self.p == 1
+                            || (Some(current[c + 1]) == self.tr_state && !self.a3));
                     match if allowed { self.pickup_thaw(current[c + 1]) } else { None } {
                         Some(v) => v,
                         None => config.external as u8,
@@ -1616,7 +1634,7 @@ fn main() {
             .as_ref()
             .map(|a| a.segments.iter().filter(|s| !s.intact).count())
             .unwrap_or(0);
-        let mut ff = FaultField::new_ctx(&mask, &config, signal_only, p_cnt, d1);
+        let mut ff = FaultField::new_ctx(&mask, &config, signal_only, p_cnt, d1, a3_mode);
 
         // A1/A2 の信号スケジュールを区間構造から組み立てる
         let signals: Vec<PlannedSignal> = match &analysis {
