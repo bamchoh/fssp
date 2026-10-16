@@ -540,7 +540,9 @@ def a1_expected(gold1_c, gold2_c, n1, m1, n2):
                             d = f'{v_x}NG'
                     elif t == t_dep + (x - c_m):
                         d = f'{v_x}NG'
-                if x <= j_max:
+                # journey の表示は解凍時刻 f_+dt まで(off+dt ∈ [0,2] の交差セルは
+                # 解凍遷移で複合が切れて平常表示に復帰する=装置側もそう動く)
+                if x <= j_max and t < f_ + dt:
                         tau = 3 * x - 2
                         off = f_ - tau
                         if off <= -1:
@@ -604,7 +606,10 @@ def a1_expected(gold1_c, gold2_c, n1, m1, n2):
                     elif t == t_tr and t_tr <= T2 + fb and x2 < n2:
                         row.append('TR')
                     elif t >= T2:
-                        row.append(gold2_c[t - T2][x2 - 1])
+                        if n2 == 1 and t == 2 * n - 2:
+                            row.append('F')  # 1 セル区間は T2(=2n−2)で即発火
+                        else:
+                            row.append(gold2_c[t - T2][x2 - 1])
                     else:
                         row.append('L')
                 else:
@@ -975,6 +980,14 @@ def add_meeting():
     for l in fv:
         for v in held:
             put((l, 'F' + v, 'TR'), v + 'R2')        # n1 右端での装填
+    # c = n1(偶数 S)の会合放出: R2 の装填時刻 2S+1−n1 が t_dep と一致し、
+    # R2 を会合セルの右隣(管路側)に進められないため、装填と同時に
+    # journey 位相(S3A、t_dep−1 = 3n1−4 = n1+2m1 の唯一の一致)を左隣に
+    # 見る放出キーが担う。n2 = 1 では t_dep−1 の左隣位相が S33 になるうえ
+    # ポートを FT が奪うので發火しない(exp も放出を表示しない=一貫)。
+    for v in held:
+        for w in held:
+            put((v + 'S3A', 'F' + w, 'TR'), w + 'NG')
     fheld = ['www'] + fv
     for r in ['W'] + fv:
         for l in fheld:
@@ -1012,6 +1025,9 @@ def add_meeting():
                 put((v + 'NG', 'F' + w, r), w + 'NG')   # 右走行伝播
                 put((v + 'NG', 'L', 'L'), 'M')           # I2 左端の起動
                 put((v + 'NG', 'L', 'www'), 'F')         # I2=1 セル区間の起動
+                # T3 反射波が I2 左端の右隣を通過中の起動(t_ft(x2=2) == 2S−1 の
+                # 一族): exp は起動表示が T3 複合(MT3)になる
+                put((v + 'NG', 'L', 'T3'), 'MT3')
                 # I2 左端が T3 通過中(未起床=純 T3 / 起床済み=複合)のこともある
                 for c2 in ['T3'] + [h2 + 'T3' for h2 in held]:
                     put((v + 'NG', c2, 'L'), 'M')
@@ -1020,31 +1036,154 @@ def add_meeting():
                 # journey 再点火を防ぐ(ph0 を左隣に持つ NG 表示は存在しない)
                 for l in held:
                     put((l + 'S3A', w + 'NG', r), w + 'NG')
+    # -- 解凍前線の複合左隣レーン(右走り波と解凍前線の 1/1 対面衝突)---------
+    # 前線がセル x の解凍時刻 f_x+dt に点火するとき、左隣 x−1 の表示が
+    # 右走り波と重なる瞬間がある(x は凍結済、x−1 も凍結済なので重なるのは
+    # 氷結複合だけ):
+    #   - NG 会合放出 {v}NG: NG と前線が同じ速度で逆向きに走るので
+    #     2x == 2n1−2+dt−S(dt <= S)で正面衝突する。exp 設計は前線が勝つ
+    #     (NG は x−1 で吸収、x は予定どおり復帰、I_{i+1} は注入代替で起動)。
+    #   - S33 journey 氷結複合 {X}ph: journey は会合セル c−1 で止まるので
+    #     衝突は x <= c のときだけ(4x ∈ [2n1+dt+1, 2n1+dt+3])。
+    # いずれも素の (F_l, F_w, r) 前線規則を複合左隣レーンに複製する
+    # (複合の保値 v が素の左隣表示 F_v に対応する)。
+    for v in held:
+        for w in held:
+            for r in held:
+                t0 = rulemap.get(('F' + v, 'F' + w, r))
+                if t0 is None:
+                    continue
+                put((v + 'NG', 'F' + w, r), t0)
+                for ph in phn:
+                    put((v + ph, 'F' + w, r), t0)
+    # -- 解凍前線の journey 中央レーン(journey 滞在中に解凍時刻が来る交差)----
+    # journey(1/3)と解凍波(1/1 左走り)は逆向きに交差し、交差セル x の解凍
+    # 遷移では中央が氷結複合 {X}ph、右隣が既に平常表示(x+1 は先に解凍される)
+    # になる。このキー (l, {X}ph, 平常 r) に素の (l, F_X, r) 規則を複製する
+    # (r = 平常値は journey 前進/復帰のキー r = 氷結複合と分離しているので
+    # 進行への影響はない。S3B 復帰 (l, {X}S3B, r) -> 'F'+X も同形状だが
+    # 平常 r のときは交差しか起こらない)。交差セルの解凍は複合表示と重なる
+    # (exp も journey 位相を優先表示する)ので、セル自身は複合のまま位相を
+    # 進めつつ、遷移値は素の規則に従う。
+    for X in held:
+        for l in ['www'] + held + fv:
+            for r in held:
+                t0 = rulemap.get((l, 'F' + X, r))
+                if t0 is None:
+                    continue
+                for ph in phn:
+                    put((l, X + ph, r), t0)
+    # -- journey 左隣レーン(交差セルの右隣が既に解凍済みのとき)--------------
+    # 交差点の右側では解凍が先に起こる(journey は 1/3 で遅い)ので、journey
+    # を表示中のセル x の右隣 x+1 は既に平常表示に復帰していることがある。
+    # このキー (journey 左隣, 平常中央, 平常右隣) に素の (F_X, w, r) 規則を
+    # 複製する(中央が氷結複合のときは上のレーンが担当、進行規則との競合は
+    # 平常右隣の分離で避ける)。下位複合(awake セル)は x+1 が解凍済みになる
+    # 前に journey が終わるので不要。
+    for X in held:
+        for w in held:
+            for r in held + ['FT2']:
+                t0 = rulemap.get(('F' + X, w, r))
+                if t0 is None:
+                    continue
+                for ph in phn:
+                    put((X + ph, w, r), t0)
+    # -- R2 左隣レーン(n2 = 2: R2 波と解凍前線が同速で並走する一族)------------
+    # R2 表示時刻 2S+1−x と前線点火時刻 f_{x+1}+dt は 4−2n2 = 0(n2 = 2)で
+    # 全歩行セルで一致する。このキー (sR2, F_w, 平常 r) に素の前線規則
+    # (F_s, F_w, r) を複製する(R2 は吸収、セルは予定どおり解凍)。
+    for s in held:
+        for w in held:
+            for r in held:
+                t0 = rulemap.get(('F' + s, 'F' + w, r))
+                if t0 is None:
+                    continue
+                put((s + 'R2', 'F' + w, r), t0)
+    # -- NG carrier の左隣レーン(2 通り)--------------------------------------
+    # (i) 会合セル c_m の右隣が既に解凍済みのとき(放出と右隣の解凍が同時):
+    #     carrier の保値 v = 左隣の凍結表示なので素の (F_v, c, r) で置き換える。
+    # (ii) 奇数 S の 2 歩表示による管路再装填が起動済み I2 左端に当たるとき:
+    #     管路由来なので素の (L, M, r) と同じ扱い(中央は起動直後の M のみ)。
+    for (l, c, r), y in list(rulemap.items()):
+        if l != 'L' or c != 'M' or r == 'FT2':
+            continue
+        for v in held:
+            if v + 'NG' in names:
+                put((v + 'NG', c, r), y)
+    for v in held:
+        for c in held:
+            if c == 'L' or c == 'M':
+                continue
+            for r in held + ['FT2']:
+                t0 = rulemap.get(('F' + v, c, r))
+                if t0 is not None:
+                    put((v + 'NG', c, r), t0)
+    # -- 複合左隣・解凍後位相(FT2)の保持 --------------------------------------
+    # n1 が解凍済みで左隣に carrier/journey 複合が残る配置。素の
+    # (F{host}, c, FT2) 保持規則を複合左隣レーンに複製する。
+    for l in ([h + 'NG' for h in held] + [h + 'R2' for h in held]):
+        for c in held:
+            if c == 'L':
+                continue
+            t0 = rulemap.get(('F' + l[0], c, 'FT2'))
+            if t0 is not None:
+                put((l, c, 'FT2'), t0)
+    # -- 会合放出表示と会合セル自身の解凍の重なり(dt−S 奇数の一族)------------
+    # 2 歩表示の 1 歩目が会合セルの解凍遷移と重なるとき(2c_m = 2n1+dt−S−1)、
+    # セルの解凍は複合表示のまま規則値に従う(off ∈ [0,2] の交差と同型)。
+    # 右隣が既に平常表示(先に解凍)のキーに素の (l-アナログ, F_v, r) を複製。
+    # 左隣は journey 複合のこともある(会合直前の位相滞在中の重なり)。
+    for X in held:
+        for l in (['www'] + held + fv
+                  + [lo[h] + ph for h in held for ph in phn]
+                  + [h + ph for h in held for ph in phn]
+                  + [h + 'NG' for h in held]
+                  + [h + 'R2' for h in held]):
+            for r in held:
+                la = ('F' + l[0].upper()
+                      if l.endswith(phn) or l.endswith(('NG', 'R2')) else l)
+                t0 = rulemap.get((la, 'F' + X, r))
+                if t0 is None:
+                    continue
+                put((l, X + 'NG', r), t0)
     # thaw の FT-lane: 凍結複合表示中に解凍信号 FT が届いたら、その保値の
     # (X, F_v, FT) 準拠の thaw 遷移に落とし込む(cell2@n1 の thaw が STAY 直後
-    # に重なるケース)
+    # に重なるケース)。複合左隣(NG/R2/journey)は保値対応の素のキー
+    # (F{host}, F_v, FT) を引く(journey 交差で n1 と同時刻の解凍になる配置)。
+    def ft_l(l, v):
+        if l.startswith('www'):
+            return rulemap.get((l, 'F' + v, 'FT'))
+        host = l[0].upper()
+        if l.endswith(phn) or l.endswith(('NG', 'R2')):
+            return rulemap.get(('F' + host, 'F' + v, 'FT'))
+        # 凍結複合以外(凍結表示そのもの)は素のキー
+        t0 = rulemap.get((l, 'F' + v, 'FT'))
+        if t0 is None:
+            t0 = rulemap.get(('F' + host, 'F' + v, 'FT'))
+        return t0
     for l in (fheld
               + [lo[h] + ph for h in held for ph in phn]
               + [h + ph for h in held for ph in phn]
               + [h + 'NG' for h in held]
               + [h + 'R2' for h in held]):
         for v in held:
-            if l.endswith('NG'):
-                # NG の左隣はその保値の F 表示と同じ扱い(BNG = F(B) に相当)
-                t0 = rulemap.get(('F' + l[0], 'F' + v, 'FT'))
-            elif l.endswith('R2'):
-                t0 = rulemap.get(('F' + l[0], 'F' + v, 'FT'))
-            else:
+            if l.startswith('www'):
                 t0 = rulemap.get((l, 'F' + v, 'FT'))
-            if t0 is None:
-                t0 = rulemap.get((l, 'F' + v, 'www'))  # FT2 類似の既知遷移があれば代用
+                if t0 is None:
+                    t0 = rulemap.get((l, 'F' + v, 'www'))  # FT2 類似の既知遷移があれば代用
+            else:
+                t0 = ft_l(l, v)
             for ph in phn:
                 put((l, lo[v] + ph, 'FT'), t0)
                 put((l, v + ph, 'FT'), t0)
+            # NG 会合放出の表示が解凍 FT の提示と同時になる配置(会合セル = n1、
+            # dt = S+1 奇数 S): carrier が FT を踏むので保値の thaw に落とし込む
+            if t0 is not None:
+                put((l, v + 'NG', 'FT'), t0)
         # NG/R2 の左隣は凍結表示 (F_v) のこともある(thaw が重なる配置):
         # 保値に対応する素の (F_l, F_v, FT) thaw 規則の複製
         for v in held:
-            t0 = rulemap.get(('F' + l[0], 'F' + v, 'FT')) if                 (l.endswith('NG') or l.endswith('R2')) else                 rulemap.get((l, 'F' + v, 'FT'))
+            t0 = ft_l(l, v)
             if t0 is not None:
                 put((l, 'F' + v, 'FT'), t0)
 

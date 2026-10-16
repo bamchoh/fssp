@@ -882,7 +882,18 @@ fn plan_a1_signals(analysis: &FaultAnalysis, config: &Config, a3: bool) -> (Vec<
         if let Some(ng) = ng {
             let s1 = n_i + m_i;
             let c_meet = if s1 % 2 == 0 { s1 / 2 + 1 } else { (s1 + 3) / 2 };
-            if p != 1 || c_meet > n_i {
+            // 会合機械が I_{i+1} 起動を配信できる条件(p=1):
+            //   - 会合セルが I1 内(c_meet <= n1)。偶数 S で c = n1 のときは
+            //     S3A+TR の同時放出キーが担う(規則層)。
+            //   - 放出波が解凍前線に追いつかれない: t_NG(x) < f_x+dt の全 x は
+            //     dt > S と同値(dt <= S では {v}NG は y = n1+(dt−S)/2 で吸収、
+            //     会合セル自身の解凍とも重なる)。規則層は前線が勝つ側に合わせて
+            //     あるので、この一族では注入での代替を残す(後段課題)。
+            //   - n_{p+1} = 1 では I_{p+1} 右端の壁反射が R2 装填 TR のポート提示
+            //     を奪い(T3 が優先)、会合機械自体が成立しない。
+            let n_last2 = sizes[sizes.len() - 1];
+            let deliverable = 2 * m_i + 2 * n_last2 > s1;
+            if p != 1 || c_meet > n_i || !deliverable || n_last2 == 1 {
                 let t_next = t_i(i + 1);
                 plan.push(PlannedSignal {
                     time: t_next - 1 - (m_i - 1),
