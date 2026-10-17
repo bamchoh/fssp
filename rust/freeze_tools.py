@@ -301,7 +301,7 @@ def run(binary, args):
 
 def state_rows(text):
     skip = ('R:', 'L:', 'F:', 'cells:', 'segments:', 'constraint', 'note:',
-            'a1:', 'time:', 'SYNCED', 'NOT')
+            'a1:', 'time:', 'SYNCED', 'NOT', 'sig:')
     return [l.rstrip() for l in text.splitlines()
             if l.strip() and not l.startswith(skip)]
 
@@ -615,7 +615,9 @@ def a1_expected(gold1_c, gold2_c, n1, m1, n2):
                         else:
                             row.append(gold2_c[t - T2][x2 - 1].strip() + 'T3')
                     elif t == t_tr and t_tr <= T2 + fb and x2 < n2:
-                        row.append('TR')
+                        # 担体が D1 を横断して I_{i+1} 左端に提示される表示は
+                        # 専用状態 cBT(②-B)。ride は次セルから素 TR。
+                        row.append('cBT' if x2 == 1 else 'TR')
                     elif t >= T2:
                         if n2 == 1 and t == 2 * n - 2:
                             row.append('F')  # 1 セル区間は T2(=2n−2)で即発火
@@ -1214,6 +1216,87 @@ def add_meeting():
     write_file(states, pre, post, ordered)
     print(f'add_meeting: states={len(states)} rules={len(ordered)} '
           f'(overrides={n_override[0]})')
+
+def add_collisions():
+    # ②-B 衝突族: 対の担体(CB)横断と fast 波の壁反射帰り T3 が短い I_{i+1} 内で
+    # 重なるとき、担体の 1 歩 TR 表示((CB,L,L)→TR)を優先する(帰り T3 は
+    # p>=2 では解凍に使わない=注入代替なので消えてよい)。欠落キーは
+    # state0(FB) に落ちて choreography を壊すため必須。
+    states, rules, pre, post = load(OUT_RULE)
+    rulemap = parse_rules(rules)
+    names = set(state_name(x).strip() for x in states)
+    n_add = 0
+    # 専用状態 cBT: 対の担体(CB)が D_i を横断して I_{i+1} 左端に提示されるとき
+    # の表示。素の TR だと遠位口 pickup の (F_l,F_v,TR)→{v}R2 変換が fast 波
+    # ride の TR にも無差別発火して偽 R2 誕生(実測 (2,1,5,3,2) n=13)。
+    # cBT だけを遠位口 pickup(own_wave ゲート)が拾うので区別できる。
+    if 'cBT' not in names:
+        states.append(pad('cBT') + '@101010,E0C040,others')
+        names.add('cBT')
+    # 横断表示: (CB-stream, x, y) → cBT(x = 就寝 L / T3 帰り波、y = L / www /
+    # T3 族)。素の (CB,L,L)→TR と 1c 族((CB,L,y)→TR)を置換。
+    # (CB, T3, y) のみ変換(壁隣接 (CB,L,www) は committed の →T3 =
+    # 「n_{i+1}=1 で担体が即壁反射する」機構)。
+    # 1c 族((CB,L,y)→TR、y=T3族)も cBT に置換(横断表示の統一)。
+    # ※add_collisions は再実行可能にするため、committed 値への逆上書きも
+    #   明示する(以前の誤置換 (CB,L,www)→cBT が残っている場合の修復)。
+    rulemap[('CB', 'L', 'www')] = 'T3'
+    rulemap.pop(('CB', 'T3', 'www'), None)
+    for y in ['L', 'T3'] + ['%sT3' % x for x in 'ABCLMQR']:
+        for x in ('L', 'T3'):
+            key = ('CB', x, y)
+            if rulemap.get(key) != 'cBT':
+                rulemap[key] = 'cBT'
+                n_add += 1
+    # ride 継続(左端の次セルから素 TR で 1/1 右走)と表示後の復帰
+    # (復帰は右隣が L のとき www=壁隣接(n_{i+1}=1 縮退)の 2 変種)
+    for key, tgt in [(('cBT', 'L', 'L'), 'TR'), (('L', 'cBT', 'L'), 'L'),
+                     (('L', 'cBT', 'www'), 'L')]:
+        if rulemap.get(key) != tgt:
+            rulemap[key] = tgt
+            n_add += 1
+    # fast 波の壁反射帰り T3 が対の担体の TR 表示と隣接した衝突:
+    #  - T3 帰り波が asleep セルに入るとき左の担体表示(TR/NG 系)を左入力に
+    #    持つキーが欠落 → state0(FB) 蔓延で I3 が死ぬ(実測 (3,1,3,1,4) n=12)。
+    #    (l, L, T3族) -> T3 に担体系の l を追加(既存族は www/L+interior のみ)。
+    for l in ('TR', 'NG', 'LNG'):
+        for y in ['T3'] + ['%sT3' % x for x in 'ABCLMQR']:
+            key = (l, 'L', y)
+            if key not in rulemap:
+                rulemap[key] = 'T3' if y == 'T3' else y
+                n_add += 1
+    # r-lane TR の cBT 鏡写し: to_left ストリームの R2 装填/放出トリガ
+    # ((F_l,F_v,TR)→{v}R2、(X+S3A,F_v,TR)→放出 等)は cBT を入力に取る
+    # (cBT 専用 pickup の後、素 TR は to_left に届かないため実質引継ぎ)。
+    n_mirror = 0
+    for (l, c, r), t in list(rulemap.items()):
+        if r == 'TR':
+            key = (l, c, 'cBT')
+            if rulemap.get(key) != t:
+                rulemap[key] = t
+                n_mirror += 1
+        if l == 'TR':
+            key = ('cBT', c, r)
+            if rulemap.get(key) != t:
+                rulemap[key] = t
+                n_mirror += 1
+    # cBT を L と同様に扱う鏡写し(就寝セルに T3 帰り波が入る時、中央が
+    # cBT(担体横断表示の残像)だと (x,cBT,T3族) が欠落 → state0(FB) 蔓延:
+    # 実測 (2,1,3,1,3) n=10)。(x, L, T3族)→T3 を (x, cBT, T3族)→T3 へ。
+    for (l, c, r), t in list(rulemap.items()):
+        if c == 'L' and r == 'T3':
+            key = (l, 'cBT', r)
+            if rulemap.get(key) != t:
+                rulemap[key] = t
+                n_mirror += 1
+    bad = [k for k in rulemap for lane in k if lane.strip() not in names]
+    if bad:
+        raise SystemExit(f'add_collisions: unknown-lane keys: {bad[:5]}')
+    ordered = emit(rulemap, list(rulemap.keys()))
+    write_file(states, pre, post, ordered)
+    print(f'add_collisions: states={len(states)} rules={len(ordered)} '
+          f'(+{n_add}, mirror {n_mirror})')
+
 
 def add_birth():
     # ②-B 誕生+衝突族(2026-10-17 exp_birth 実験の緑化結果を本線へ):

@@ -1,5 +1,5 @@
 SL1rule
-state_number 108
+state_number 109
 FB   @101010,808080,others
 A    @000000,0080FF,others
 B    @000000,00FFFF,others
@@ -108,9 +108,10 @@ qS3BT3@101010,B070C0,others
 rS33T3@101010,B070C0,others
 rS3AT3@101010,B070C0,others
 rS3BT3@101010,B070C0,others
+cBT  @101010,E0C040,others
 general_number 1
 1,1
-rule_number 212182
+rule_number 213597
 A    ##A    ##A    ->A    
 A    ##A    ##L    ->A    
 A    ##A    ##Q    ->A    
@@ -3572,7 +3573,7 @@ FQ   ##CB   ##CB   ->FL
 FR   ##CB   ##CB   ->FL   
 FS   ##CB   ##CB   ->FL   
 FT   ##CB   ##CB   ->FL   
-CB   ##L    ##L    ->TR   
+CB   ##L    ##L    ->cBT  
 CB   ##L    ##www  ->T3   
 TR   ##L    ##L    ->TR   
 TR   ##L    ##www  ->T3   
@@ -8328,14 +8329,14 @@ L    ##TR   ##W    ->L
 www  ##TR   ##W    ->L    
 CB   ##LT3  ##W    ->TR   
 LT3  ##TR   ##W    ->L    
-CB   ##L    ##T3   ->TR   
-CB   ##L    ##AT3  ->TR   
-CB   ##L    ##BT3  ->TR   
-CB   ##L    ##CT3  ->TR   
-CB   ##L    ##LT3  ->TR   
-CB   ##L    ##MT3  ->TR   
-CB   ##L    ##QT3  ->TR   
-CB   ##L    ##RT3  ->TR   
+CB   ##L    ##T3   ->cBT  
+CB   ##L    ##AT3  ->cBT  
+CB   ##L    ##BT3  ->cBT  
+CB   ##L    ##CT3  ->cBT  
+CB   ##L    ##LT3  ->cBT  
+CB   ##L    ##MT3  ->cBT  
+CB   ##L    ##QT3  ->cBT  
+CB   ##L    ##RT3  ->cBT  
 CB   ##LT3  ##T3   ->TR   
 CB   ##LT3  ##AT3  ->TR   
 CB   ##LT3  ##BT3  ->TR   
@@ -212293,3 +212294,1418 @@ rS3BT3##mS3BT3##QS3B ->F
 rS3BT3##mS3BT3##RS33 ->F    
 rS3BT3##mS3BT3##RS3A ->F    
 rS3BT3##mS3BT3##RS3B ->F    
+CB   ##T3   ##L    ->cBT  
+TR   ##T3   ##www  ->L    
+TR   ##T3   ##L    ->L    
+TR   ##L    ##T3   ->T3   
+TR   ##L    ##AT3  ->AT3  
+TR   ##L    ##BT3  ->BT3  
+TR   ##L    ##CT3  ->CT3  
+TR   ##L    ##LT3  ->LT3  
+TR   ##L    ##MT3  ->MT3  
+TR   ##L    ##QT3  ->QT3  
+TR   ##L    ##RT3  ->RT3  
+NG   ##L    ##AT3  ->AT3  
+NG   ##L    ##BT3  ->BT3  
+NG   ##L    ##CT3  ->CT3  
+NG   ##L    ##LT3  ->LT3  
+NG   ##L    ##MT3  ->MT3  
+NG   ##L    ##QT3  ->QT3  
+NG   ##L    ##RT3  ->RT3  
+LNG  ##L    ##AT3  ->AT3  
+LNG  ##L    ##BT3  ->BT3  
+LNG  ##L    ##CT3  ->CT3  
+LNG  ##L    ##LT3  ->LT3  
+LNG  ##L    ##MT3  ->MT3  
+LNG  ##L    ##QT3  ->QT3  
+LNG  ##L    ##RT3  ->RT3  
+CB   ##www  ##L    ->cBT  
+CB   ##T3   ##T3   ->cBT  
+CB   ##T3   ##AT3  ->cBT  
+CB   ##T3   ##BT3  ->cBT  
+CB   ##T3   ##CT3  ->cBT  
+CB   ##T3   ##LT3  ->cBT  
+CB   ##T3   ##MT3  ->cBT  
+CB   ##T3   ##QT3  ->cBT  
+CB   ##T3   ##RT3  ->cBT  
+cBT  ##L    ##L    ->TR   
+L    ##cBT  ##L    ->L    
+www  ##L    ##cBT  ->L    
+L    ##L    ##cBT  ->L    
+www  ##LT3  ##cBT  ->L    
+L    ##LT3  ##cBT  ->L    
+LT3  ##LT3  ##cBT  ->L    
+LT3  ##L    ##cBT  ->L    
+aS3B ##FA   ##cBT  ->AS33 
+AS3B ##FA   ##cBT  ->AS33 
+aS3B ##FB   ##cBT  ->BS33 
+AS3B ##FB   ##cBT  ->BS33 
+aS3B ##FC   ##cBT  ->CS33 
+AS3B ##FC   ##cBT  ->CS33 
+aS3B ##FL   ##cBT  ->LS33 
+AS3B ##FL   ##cBT  ->LS33 
+aS3B ##FM   ##cBT  ->MS33 
+AS3B ##FM   ##cBT  ->MS33 
+aS3B ##FQ   ##cBT  ->QS33 
+AS3B ##FQ   ##cBT  ->QS33 
+aS3B ##FR   ##cBT  ->RS33 
+AS3B ##FR   ##cBT  ->RS33 
+bS3B ##FA   ##cBT  ->AS33 
+BS3B ##FA   ##cBT  ->AS33 
+bS3B ##FB   ##cBT  ->BS33 
+BS3B ##FB   ##cBT  ->BS33 
+bS3B ##FC   ##cBT  ->CS33 
+BS3B ##FC   ##cBT  ->CS33 
+bS3B ##FL   ##cBT  ->LS33 
+BS3B ##FL   ##cBT  ->LS33 
+bS3B ##FM   ##cBT  ->MS33 
+BS3B ##FM   ##cBT  ->MS33 
+bS3B ##FQ   ##cBT  ->QS33 
+BS3B ##FQ   ##cBT  ->QS33 
+bS3B ##FR   ##cBT  ->RS33 
+BS3B ##FR   ##cBT  ->RS33 
+cS3B ##FA   ##cBT  ->AS33 
+CS3B ##FA   ##cBT  ->AS33 
+cS3B ##FB   ##cBT  ->BS33 
+CS3B ##FB   ##cBT  ->BS33 
+cS3B ##FC   ##cBT  ->CS33 
+CS3B ##FC   ##cBT  ->CS33 
+cS3B ##FL   ##cBT  ->LS33 
+CS3B ##FL   ##cBT  ->LS33 
+cS3B ##FM   ##cBT  ->MS33 
+CS3B ##FM   ##cBT  ->MS33 
+cS3B ##FQ   ##cBT  ->QS33 
+CS3B ##FQ   ##cBT  ->QS33 
+cS3B ##FR   ##cBT  ->RS33 
+CS3B ##FR   ##cBT  ->RS33 
+lS3B ##FA   ##cBT  ->AS33 
+LS3B ##FA   ##cBT  ->AS33 
+lS3B ##FB   ##cBT  ->BS33 
+LS3B ##FB   ##cBT  ->BS33 
+lS3B ##FC   ##cBT  ->CS33 
+LS3B ##FC   ##cBT  ->CS33 
+lS3B ##FL   ##cBT  ->LS33 
+LS3B ##FL   ##cBT  ->LS33 
+lS3B ##FM   ##cBT  ->MS33 
+LS3B ##FM   ##cBT  ->MS33 
+lS3B ##FQ   ##cBT  ->QS33 
+LS3B ##FQ   ##cBT  ->QS33 
+lS3B ##FR   ##cBT  ->RS33 
+LS3B ##FR   ##cBT  ->RS33 
+mS3B ##FA   ##cBT  ->AS33 
+MS3B ##FA   ##cBT  ->AS33 
+mS3B ##FB   ##cBT  ->BS33 
+MS3B ##FB   ##cBT  ->BS33 
+mS3B ##FC   ##cBT  ->CS33 
+MS3B ##FC   ##cBT  ->CS33 
+mS3B ##FL   ##cBT  ->LS33 
+MS3B ##FL   ##cBT  ->LS33 
+mS3B ##FM   ##cBT  ->MS33 
+MS3B ##FM   ##cBT  ->MS33 
+mS3B ##FQ   ##cBT  ->QS33 
+MS3B ##FQ   ##cBT  ->QS33 
+mS3B ##FR   ##cBT  ->RS33 
+MS3B ##FR   ##cBT  ->RS33 
+qS3B ##FA   ##cBT  ->AS33 
+QS3B ##FA   ##cBT  ->AS33 
+qS3B ##FB   ##cBT  ->BS33 
+QS3B ##FB   ##cBT  ->BS33 
+qS3B ##FC   ##cBT  ->CS33 
+QS3B ##FC   ##cBT  ->CS33 
+qS3B ##FL   ##cBT  ->LS33 
+QS3B ##FL   ##cBT  ->LS33 
+qS3B ##FM   ##cBT  ->MS33 
+QS3B ##FM   ##cBT  ->MS33 
+qS3B ##FQ   ##cBT  ->QS33 
+QS3B ##FQ   ##cBT  ->QS33 
+qS3B ##FR   ##cBT  ->RS33 
+QS3B ##FR   ##cBT  ->RS33 
+rS3B ##FA   ##cBT  ->AS33 
+RS3B ##FA   ##cBT  ->AS33 
+rS3B ##FB   ##cBT  ->BS33 
+RS3B ##FB   ##cBT  ->BS33 
+rS3B ##FC   ##cBT  ->CS33 
+RS3B ##FC   ##cBT  ->CS33 
+rS3B ##FL   ##cBT  ->LS33 
+RS3B ##FL   ##cBT  ->LS33 
+rS3B ##FM   ##cBT  ->MS33 
+RS3B ##FM   ##cBT  ->MS33 
+rS3B ##FQ   ##cBT  ->QS33 
+RS3B ##FQ   ##cBT  ->QS33 
+rS3B ##FR   ##cBT  ->RS33 
+RS3B ##FR   ##cBT  ->RS33 
+www  ##AS33 ##cBT  ->AS3A 
+www  ##AS3A ##cBT  ->AS3B 
+www  ##AS3B ##cBT  ->FA   
+A    ##AS33 ##cBT  ->AS3A 
+A    ##AS3A ##cBT  ->AS3B 
+A    ##AS3B ##cBT  ->FA   
+B    ##AS33 ##cBT  ->AS3A 
+B    ##AS3A ##cBT  ->AS3B 
+B    ##AS3B ##cBT  ->FA   
+C    ##AS33 ##cBT  ->AS3A 
+C    ##AS3A ##cBT  ->AS3B 
+C    ##AS3B ##cBT  ->FA   
+L    ##AS33 ##cBT  ->AS3A 
+L    ##AS3A ##cBT  ->AS3B 
+L    ##AS3B ##cBT  ->FA   
+M    ##AS33 ##cBT  ->AS3A 
+M    ##AS3A ##cBT  ->AS3B 
+M    ##AS3B ##cBT  ->FA   
+Q    ##AS33 ##cBT  ->AS3A 
+Q    ##AS3A ##cBT  ->AS3B 
+Q    ##AS3B ##cBT  ->FA   
+R    ##AS33 ##cBT  ->AS3A 
+R    ##AS3A ##cBT  ->AS3B 
+R    ##AS3B ##cBT  ->FA   
+FA   ##AS33 ##cBT  ->AS3A 
+FA   ##AS3A ##cBT  ->AS3B 
+FA   ##AS3B ##cBT  ->FA   
+FB   ##AS33 ##cBT  ->AS3A 
+FB   ##AS3A ##cBT  ->AS3B 
+FB   ##AS3B ##cBT  ->FA   
+FC   ##AS33 ##cBT  ->AS3A 
+FC   ##AS3A ##cBT  ->AS3B 
+FC   ##AS3B ##cBT  ->FA   
+FL   ##AS33 ##cBT  ->AS3A 
+FL   ##AS3A ##cBT  ->AS3B 
+FL   ##AS3B ##cBT  ->FA   
+FM   ##AS33 ##cBT  ->AS3A 
+FM   ##AS3A ##cBT  ->AS3B 
+FM   ##AS3B ##cBT  ->FA   
+FQ   ##AS33 ##cBT  ->AS3A 
+FQ   ##AS3A ##cBT  ->AS3B 
+FQ   ##AS3B ##cBT  ->FA   
+FR   ##AS33 ##cBT  ->AS3A 
+FR   ##AS3A ##cBT  ->AS3B 
+FR   ##AS3B ##cBT  ->FA   
+www  ##BS33 ##cBT  ->BS3A 
+www  ##BS3A ##cBT  ->BS3B 
+www  ##BS3B ##cBT  ->FB   
+A    ##BS33 ##cBT  ->BS3A 
+A    ##BS3A ##cBT  ->BS3B 
+A    ##BS3B ##cBT  ->FB   
+B    ##BS33 ##cBT  ->BS3A 
+B    ##BS3A ##cBT  ->BS3B 
+B    ##BS3B ##cBT  ->FB   
+C    ##BS33 ##cBT  ->BS3A 
+C    ##BS3A ##cBT  ->BS3B 
+C    ##BS3B ##cBT  ->FB   
+L    ##BS33 ##cBT  ->BS3A 
+L    ##BS3A ##cBT  ->BS3B 
+L    ##BS3B ##cBT  ->FB   
+M    ##BS33 ##cBT  ->BS3A 
+M    ##BS3A ##cBT  ->BS3B 
+M    ##BS3B ##cBT  ->FB   
+Q    ##BS33 ##cBT  ->BS3A 
+Q    ##BS3A ##cBT  ->BS3B 
+Q    ##BS3B ##cBT  ->FB   
+R    ##BS33 ##cBT  ->BS3A 
+R    ##BS3A ##cBT  ->BS3B 
+R    ##BS3B ##cBT  ->FB   
+FA   ##BS33 ##cBT  ->BS3A 
+FA   ##BS3A ##cBT  ->BS3B 
+FA   ##BS3B ##cBT  ->FB   
+FB   ##BS33 ##cBT  ->BS3A 
+FB   ##BS3A ##cBT  ->BS3B 
+FB   ##BS3B ##cBT  ->FB   
+FC   ##BS33 ##cBT  ->BS3A 
+FC   ##BS3A ##cBT  ->BS3B 
+FC   ##BS3B ##cBT  ->FB   
+FL   ##BS33 ##cBT  ->BS3A 
+FL   ##BS3A ##cBT  ->BS3B 
+FL   ##BS3B ##cBT  ->FB   
+FM   ##BS33 ##cBT  ->BS3A 
+FM   ##BS3A ##cBT  ->BS3B 
+FM   ##BS3B ##cBT  ->FB   
+FQ   ##BS33 ##cBT  ->BS3A 
+FQ   ##BS3A ##cBT  ->BS3B 
+FQ   ##BS3B ##cBT  ->FB   
+FR   ##BS33 ##cBT  ->BS3A 
+FR   ##BS3A ##cBT  ->BS3B 
+FR   ##BS3B ##cBT  ->FB   
+www  ##CS33 ##cBT  ->CS3A 
+www  ##CS3A ##cBT  ->CS3B 
+www  ##CS3B ##cBT  ->FC   
+A    ##CS33 ##cBT  ->CS3A 
+A    ##CS3A ##cBT  ->CS3B 
+A    ##CS3B ##cBT  ->FC   
+B    ##CS33 ##cBT  ->CS3A 
+B    ##CS3A ##cBT  ->CS3B 
+B    ##CS3B ##cBT  ->FC   
+C    ##CS33 ##cBT  ->CS3A 
+C    ##CS3A ##cBT  ->CS3B 
+C    ##CS3B ##cBT  ->FC   
+L    ##CS33 ##cBT  ->CS3A 
+L    ##CS3A ##cBT  ->CS3B 
+L    ##CS3B ##cBT  ->FC   
+M    ##CS33 ##cBT  ->CS3A 
+M    ##CS3A ##cBT  ->CS3B 
+M    ##CS3B ##cBT  ->FC   
+Q    ##CS33 ##cBT  ->CS3A 
+Q    ##CS3A ##cBT  ->CS3B 
+Q    ##CS3B ##cBT  ->FC   
+R    ##CS33 ##cBT  ->CS3A 
+R    ##CS3A ##cBT  ->CS3B 
+R    ##CS3B ##cBT  ->FC   
+FA   ##CS33 ##cBT  ->CS3A 
+FA   ##CS3A ##cBT  ->CS3B 
+FA   ##CS3B ##cBT  ->FC   
+FB   ##CS33 ##cBT  ->CS3A 
+FB   ##CS3A ##cBT  ->CS3B 
+FB   ##CS3B ##cBT  ->FC   
+FC   ##CS33 ##cBT  ->CS3A 
+FC   ##CS3A ##cBT  ->CS3B 
+FC   ##CS3B ##cBT  ->FC   
+FL   ##CS33 ##cBT  ->CS3A 
+FL   ##CS3A ##cBT  ->CS3B 
+FL   ##CS3B ##cBT  ->FC   
+FM   ##CS33 ##cBT  ->CS3A 
+FM   ##CS3A ##cBT  ->CS3B 
+FM   ##CS3B ##cBT  ->FC   
+FQ   ##CS33 ##cBT  ->CS3A 
+FQ   ##CS3A ##cBT  ->CS3B 
+FQ   ##CS3B ##cBT  ->FC   
+FR   ##CS33 ##cBT  ->CS3A 
+FR   ##CS3A ##cBT  ->CS3B 
+FR   ##CS3B ##cBT  ->FC   
+www  ##LS33 ##cBT  ->LS3A 
+www  ##LS3A ##cBT  ->LS3B 
+www  ##LS3B ##cBT  ->FL   
+A    ##LS33 ##cBT  ->LS3A 
+A    ##LS3A ##cBT  ->LS3B 
+A    ##LS3B ##cBT  ->FL   
+B    ##LS33 ##cBT  ->LS3A 
+B    ##LS3A ##cBT  ->LS3B 
+B    ##LS3B ##cBT  ->FL   
+C    ##LS33 ##cBT  ->LS3A 
+C    ##LS3A ##cBT  ->LS3B 
+C    ##LS3B ##cBT  ->FL   
+L    ##LS33 ##cBT  ->LS3A 
+L    ##LS3A ##cBT  ->LS3B 
+L    ##LS3B ##cBT  ->FL   
+M    ##LS33 ##cBT  ->LS3A 
+M    ##LS3A ##cBT  ->LS3B 
+M    ##LS3B ##cBT  ->FL   
+Q    ##LS33 ##cBT  ->LS3A 
+Q    ##LS3A ##cBT  ->LS3B 
+Q    ##LS3B ##cBT  ->FL   
+R    ##LS33 ##cBT  ->LS3A 
+R    ##LS3A ##cBT  ->LS3B 
+R    ##LS3B ##cBT  ->FL   
+FA   ##LS33 ##cBT  ->LS3A 
+FA   ##LS3A ##cBT  ->LS3B 
+FA   ##LS3B ##cBT  ->FL   
+FB   ##LS33 ##cBT  ->LS3A 
+FB   ##LS3A ##cBT  ->LS3B 
+FB   ##LS3B ##cBT  ->FL   
+FC   ##LS33 ##cBT  ->LS3A 
+FC   ##LS3A ##cBT  ->LS3B 
+FC   ##LS3B ##cBT  ->FL   
+FL   ##LS33 ##cBT  ->LS3A 
+FL   ##LS3A ##cBT  ->LS3B 
+FL   ##LS3B ##cBT  ->FL   
+FM   ##LS33 ##cBT  ->LS3A 
+FM   ##LS3A ##cBT  ->LS3B 
+FM   ##LS3B ##cBT  ->FL   
+FQ   ##LS33 ##cBT  ->LS3A 
+FQ   ##LS3A ##cBT  ->LS3B 
+FQ   ##LS3B ##cBT  ->FL   
+FR   ##LS33 ##cBT  ->LS3A 
+FR   ##LS3A ##cBT  ->LS3B 
+FR   ##LS3B ##cBT  ->FL   
+www  ##MS33 ##cBT  ->MS3A 
+www  ##MS3A ##cBT  ->MS3B 
+www  ##MS3B ##cBT  ->FM   
+A    ##MS33 ##cBT  ->MS3A 
+A    ##MS3A ##cBT  ->MS3B 
+A    ##MS3B ##cBT  ->FM   
+B    ##MS33 ##cBT  ->MS3A 
+B    ##MS3A ##cBT  ->MS3B 
+B    ##MS3B ##cBT  ->FM   
+C    ##MS33 ##cBT  ->MS3A 
+C    ##MS3A ##cBT  ->MS3B 
+C    ##MS3B ##cBT  ->FM   
+L    ##MS33 ##cBT  ->MS3A 
+L    ##MS3A ##cBT  ->MS3B 
+L    ##MS3B ##cBT  ->FM   
+M    ##MS33 ##cBT  ->MS3A 
+M    ##MS3A ##cBT  ->MS3B 
+M    ##MS3B ##cBT  ->FM   
+Q    ##MS33 ##cBT  ->MS3A 
+Q    ##MS3A ##cBT  ->MS3B 
+Q    ##MS3B ##cBT  ->FM   
+R    ##MS33 ##cBT  ->MS3A 
+R    ##MS3A ##cBT  ->MS3B 
+R    ##MS3B ##cBT  ->FM   
+FA   ##MS33 ##cBT  ->MS3A 
+FA   ##MS3A ##cBT  ->MS3B 
+FA   ##MS3B ##cBT  ->FM   
+FB   ##MS33 ##cBT  ->MS3A 
+FB   ##MS3A ##cBT  ->MS3B 
+FB   ##MS3B ##cBT  ->FM   
+FC   ##MS33 ##cBT  ->MS3A 
+FC   ##MS3A ##cBT  ->MS3B 
+FC   ##MS3B ##cBT  ->FM   
+FL   ##MS33 ##cBT  ->MS3A 
+FL   ##MS3A ##cBT  ->MS3B 
+FL   ##MS3B ##cBT  ->FM   
+FM   ##MS33 ##cBT  ->MS3A 
+FM   ##MS3A ##cBT  ->MS3B 
+FM   ##MS3B ##cBT  ->FM   
+FQ   ##MS33 ##cBT  ->MS3A 
+FQ   ##MS3A ##cBT  ->MS3B 
+FQ   ##MS3B ##cBT  ->FM   
+FR   ##MS33 ##cBT  ->MS3A 
+FR   ##MS3A ##cBT  ->MS3B 
+FR   ##MS3B ##cBT  ->FM   
+www  ##QS33 ##cBT  ->QS3A 
+www  ##QS3A ##cBT  ->QS3B 
+www  ##QS3B ##cBT  ->FQ   
+A    ##QS33 ##cBT  ->QS3A 
+A    ##QS3A ##cBT  ->QS3B 
+A    ##QS3B ##cBT  ->FQ   
+B    ##QS33 ##cBT  ->QS3A 
+B    ##QS3A ##cBT  ->QS3B 
+B    ##QS3B ##cBT  ->FQ   
+C    ##QS33 ##cBT  ->QS3A 
+C    ##QS3A ##cBT  ->QS3B 
+C    ##QS3B ##cBT  ->FQ   
+L    ##QS33 ##cBT  ->QS3A 
+L    ##QS3A ##cBT  ->QS3B 
+L    ##QS3B ##cBT  ->FQ   
+M    ##QS33 ##cBT  ->QS3A 
+M    ##QS3A ##cBT  ->QS3B 
+M    ##QS3B ##cBT  ->FQ   
+Q    ##QS33 ##cBT  ->QS3A 
+Q    ##QS3A ##cBT  ->QS3B 
+Q    ##QS3B ##cBT  ->FQ   
+R    ##QS33 ##cBT  ->QS3A 
+R    ##QS3A ##cBT  ->QS3B 
+R    ##QS3B ##cBT  ->FQ   
+FA   ##QS33 ##cBT  ->QS3A 
+FA   ##QS3A ##cBT  ->QS3B 
+FA   ##QS3B ##cBT  ->FQ   
+FB   ##QS33 ##cBT  ->QS3A 
+FB   ##QS3A ##cBT  ->QS3B 
+FB   ##QS3B ##cBT  ->FQ   
+FC   ##QS33 ##cBT  ->QS3A 
+FC   ##QS3A ##cBT  ->QS3B 
+FC   ##QS3B ##cBT  ->FQ   
+FL   ##QS33 ##cBT  ->QS3A 
+FL   ##QS3A ##cBT  ->QS3B 
+FL   ##QS3B ##cBT  ->FQ   
+FM   ##QS33 ##cBT  ->QS3A 
+FM   ##QS3A ##cBT  ->QS3B 
+FM   ##QS3B ##cBT  ->FQ   
+FQ   ##QS33 ##cBT  ->QS3A 
+FQ   ##QS3A ##cBT  ->QS3B 
+FQ   ##QS3B ##cBT  ->FQ   
+FR   ##QS33 ##cBT  ->QS3A 
+FR   ##QS3A ##cBT  ->QS3B 
+FR   ##QS3B ##cBT  ->FQ   
+www  ##RS33 ##cBT  ->RS3A 
+www  ##RS3A ##cBT  ->RS3B 
+www  ##RS3B ##cBT  ->FR   
+A    ##RS33 ##cBT  ->RS3A 
+A    ##RS3A ##cBT  ->RS3B 
+A    ##RS3B ##cBT  ->FR   
+B    ##RS33 ##cBT  ->RS3A 
+B    ##RS3A ##cBT  ->RS3B 
+B    ##RS3B ##cBT  ->FR   
+C    ##RS33 ##cBT  ->RS3A 
+C    ##RS3A ##cBT  ->RS3B 
+C    ##RS3B ##cBT  ->FR   
+L    ##RS33 ##cBT  ->RS3A 
+L    ##RS3A ##cBT  ->RS3B 
+L    ##RS3B ##cBT  ->FR   
+M    ##RS33 ##cBT  ->RS3A 
+M    ##RS3A ##cBT  ->RS3B 
+M    ##RS3B ##cBT  ->FR   
+Q    ##RS33 ##cBT  ->RS3A 
+Q    ##RS3A ##cBT  ->RS3B 
+Q    ##RS3B ##cBT  ->FR   
+R    ##RS33 ##cBT  ->RS3A 
+R    ##RS3A ##cBT  ->RS3B 
+R    ##RS3B ##cBT  ->FR   
+FA   ##RS33 ##cBT  ->RS3A 
+FA   ##RS3A ##cBT  ->RS3B 
+FA   ##RS3B ##cBT  ->FR   
+FB   ##RS33 ##cBT  ->RS3A 
+FB   ##RS3A ##cBT  ->RS3B 
+FB   ##RS3B ##cBT  ->FR   
+FC   ##RS33 ##cBT  ->RS3A 
+FC   ##RS3A ##cBT  ->RS3B 
+FC   ##RS3B ##cBT  ->FR   
+FL   ##RS33 ##cBT  ->RS3A 
+FL   ##RS3A ##cBT  ->RS3B 
+FL   ##RS3B ##cBT  ->FR   
+FM   ##RS33 ##cBT  ->RS3A 
+FM   ##RS3A ##cBT  ->RS3B 
+FM   ##RS3B ##cBT  ->FR   
+FQ   ##RS33 ##cBT  ->RS3A 
+FQ   ##RS3A ##cBT  ->RS3B 
+FQ   ##RS3B ##cBT  ->FR   
+FR   ##RS33 ##cBT  ->RS3A 
+FR   ##RS3A ##cBT  ->RS3B 
+FR   ##RS3B ##cBT  ->FR   
+aS33 ##FA   ##cBT  ->FA   
+AS33 ##FA   ##cBT  ->FA   
+aS33 ##FB   ##cBT  ->FB   
+AS33 ##FB   ##cBT  ->FB   
+aS33 ##FC   ##cBT  ->FC   
+AS33 ##FC   ##cBT  ->FC   
+aS33 ##FL   ##cBT  ->FL   
+AS33 ##FL   ##cBT  ->FL   
+aS33 ##FM   ##cBT  ->FM   
+AS33 ##FM   ##cBT  ->FM   
+aS33 ##FQ   ##cBT  ->FQ   
+AS33 ##FQ   ##cBT  ->FQ   
+aS33 ##FR   ##cBT  ->FR   
+AS33 ##FR   ##cBT  ->FR   
+aS3A ##FA   ##cBT  ->FA   
+AS3A ##FA   ##cBT  ->ANG  
+aS3A ##FB   ##cBT  ->FB   
+AS3A ##FB   ##cBT  ->BNG  
+aS3A ##FC   ##cBT  ->FC   
+AS3A ##FC   ##cBT  ->CNG  
+aS3A ##FL   ##cBT  ->FL   
+AS3A ##FL   ##cBT  ->LNG  
+aS3A ##FM   ##cBT  ->FM   
+AS3A ##FM   ##cBT  ->MNG  
+aS3A ##FQ   ##cBT  ->FQ   
+AS3A ##FQ   ##cBT  ->QNG  
+aS3A ##FR   ##cBT  ->FR   
+AS3A ##FR   ##cBT  ->RNG  
+bS33 ##FA   ##cBT  ->FA   
+BS33 ##FA   ##cBT  ->FA   
+bS33 ##FB   ##cBT  ->FB   
+BS33 ##FB   ##cBT  ->FB   
+bS33 ##FC   ##cBT  ->FC   
+BS33 ##FC   ##cBT  ->FC   
+bS33 ##FL   ##cBT  ->FL   
+BS33 ##FL   ##cBT  ->FL   
+bS33 ##FM   ##cBT  ->FM   
+BS33 ##FM   ##cBT  ->FM   
+bS33 ##FQ   ##cBT  ->FQ   
+BS33 ##FQ   ##cBT  ->FQ   
+bS33 ##FR   ##cBT  ->FR   
+BS33 ##FR   ##cBT  ->FR   
+bS3A ##FA   ##cBT  ->FA   
+BS3A ##FA   ##cBT  ->ANG  
+bS3A ##FB   ##cBT  ->FB   
+BS3A ##FB   ##cBT  ->BNG  
+bS3A ##FC   ##cBT  ->FC   
+BS3A ##FC   ##cBT  ->CNG  
+bS3A ##FL   ##cBT  ->FL   
+BS3A ##FL   ##cBT  ->LNG  
+bS3A ##FM   ##cBT  ->FM   
+BS3A ##FM   ##cBT  ->MNG  
+bS3A ##FQ   ##cBT  ->FQ   
+BS3A ##FQ   ##cBT  ->QNG  
+bS3A ##FR   ##cBT  ->FR   
+BS3A ##FR   ##cBT  ->RNG  
+cS33 ##FA   ##cBT  ->FA   
+CS33 ##FA   ##cBT  ->FA   
+cS33 ##FB   ##cBT  ->FB   
+CS33 ##FB   ##cBT  ->FB   
+cS33 ##FC   ##cBT  ->FC   
+CS33 ##FC   ##cBT  ->FC   
+cS33 ##FL   ##cBT  ->FL   
+CS33 ##FL   ##cBT  ->FL   
+cS33 ##FM   ##cBT  ->FM   
+CS33 ##FM   ##cBT  ->FM   
+cS33 ##FQ   ##cBT  ->FQ   
+CS33 ##FQ   ##cBT  ->FQ   
+cS33 ##FR   ##cBT  ->FR   
+CS33 ##FR   ##cBT  ->FR   
+cS3A ##FA   ##cBT  ->FA   
+CS3A ##FA   ##cBT  ->ANG  
+cS3A ##FB   ##cBT  ->FB   
+CS3A ##FB   ##cBT  ->BNG  
+cS3A ##FC   ##cBT  ->FC   
+CS3A ##FC   ##cBT  ->CNG  
+cS3A ##FL   ##cBT  ->FL   
+CS3A ##FL   ##cBT  ->LNG  
+cS3A ##FM   ##cBT  ->FM   
+CS3A ##FM   ##cBT  ->MNG  
+cS3A ##FQ   ##cBT  ->FQ   
+CS3A ##FQ   ##cBT  ->QNG  
+cS3A ##FR   ##cBT  ->FR   
+CS3A ##FR   ##cBT  ->RNG  
+lS33 ##FA   ##cBT  ->FA   
+LS33 ##FA   ##cBT  ->FA   
+lS33 ##FB   ##cBT  ->FB   
+LS33 ##FB   ##cBT  ->FB   
+lS33 ##FC   ##cBT  ->FC   
+LS33 ##FC   ##cBT  ->FC   
+lS33 ##FL   ##cBT  ->FL   
+LS33 ##FL   ##cBT  ->FL   
+lS33 ##FM   ##cBT  ->FM   
+LS33 ##FM   ##cBT  ->FM   
+lS33 ##FQ   ##cBT  ->FQ   
+LS33 ##FQ   ##cBT  ->FQ   
+lS33 ##FR   ##cBT  ->FR   
+LS33 ##FR   ##cBT  ->FR   
+lS3A ##FA   ##cBT  ->FA   
+LS3A ##FA   ##cBT  ->ANG  
+lS3A ##FB   ##cBT  ->FB   
+LS3A ##FB   ##cBT  ->BNG  
+lS3A ##FC   ##cBT  ->FC   
+LS3A ##FC   ##cBT  ->CNG  
+lS3A ##FL   ##cBT  ->FL   
+LS3A ##FL   ##cBT  ->LNG  
+lS3A ##FM   ##cBT  ->FM   
+LS3A ##FM   ##cBT  ->MNG  
+lS3A ##FQ   ##cBT  ->FQ   
+LS3A ##FQ   ##cBT  ->QNG  
+lS3A ##FR   ##cBT  ->FR   
+LS3A ##FR   ##cBT  ->RNG  
+mS33 ##FA   ##cBT  ->FA   
+MS33 ##FA   ##cBT  ->FA   
+mS33 ##FB   ##cBT  ->FB   
+MS33 ##FB   ##cBT  ->FB   
+mS33 ##FC   ##cBT  ->FC   
+MS33 ##FC   ##cBT  ->FC   
+mS33 ##FL   ##cBT  ->FL   
+MS33 ##FL   ##cBT  ->FL   
+mS33 ##FM   ##cBT  ->FM   
+MS33 ##FM   ##cBT  ->FM   
+mS33 ##FQ   ##cBT  ->FQ   
+MS33 ##FQ   ##cBT  ->FQ   
+mS33 ##FR   ##cBT  ->FR   
+MS33 ##FR   ##cBT  ->FR   
+mS3A ##FA   ##cBT  ->FA   
+MS3A ##FA   ##cBT  ->ANG  
+mS3A ##FB   ##cBT  ->FB   
+MS3A ##FB   ##cBT  ->BNG  
+mS3A ##FC   ##cBT  ->FC   
+MS3A ##FC   ##cBT  ->CNG  
+mS3A ##FL   ##cBT  ->FL   
+MS3A ##FL   ##cBT  ->LNG  
+mS3A ##FM   ##cBT  ->FM   
+MS3A ##FM   ##cBT  ->MNG  
+mS3A ##FQ   ##cBT  ->FQ   
+MS3A ##FQ   ##cBT  ->QNG  
+mS3A ##FR   ##cBT  ->FR   
+MS3A ##FR   ##cBT  ->RNG  
+qS33 ##FA   ##cBT  ->FA   
+QS33 ##FA   ##cBT  ->FA   
+qS33 ##FB   ##cBT  ->FB   
+QS33 ##FB   ##cBT  ->FB   
+qS33 ##FC   ##cBT  ->FC   
+QS33 ##FC   ##cBT  ->FC   
+qS33 ##FL   ##cBT  ->FL   
+QS33 ##FL   ##cBT  ->FL   
+qS33 ##FM   ##cBT  ->FM   
+QS33 ##FM   ##cBT  ->FM   
+qS33 ##FQ   ##cBT  ->FQ   
+QS33 ##FQ   ##cBT  ->FQ   
+qS33 ##FR   ##cBT  ->FR   
+QS33 ##FR   ##cBT  ->FR   
+qS3A ##FA   ##cBT  ->FA   
+QS3A ##FA   ##cBT  ->ANG  
+qS3A ##FB   ##cBT  ->FB   
+QS3A ##FB   ##cBT  ->BNG  
+qS3A ##FC   ##cBT  ->FC   
+QS3A ##FC   ##cBT  ->CNG  
+qS3A ##FL   ##cBT  ->FL   
+QS3A ##FL   ##cBT  ->LNG  
+qS3A ##FM   ##cBT  ->FM   
+QS3A ##FM   ##cBT  ->MNG  
+qS3A ##FQ   ##cBT  ->FQ   
+QS3A ##FQ   ##cBT  ->QNG  
+qS3A ##FR   ##cBT  ->FR   
+QS3A ##FR   ##cBT  ->RNG  
+rS33 ##FA   ##cBT  ->FA   
+RS33 ##FA   ##cBT  ->FA   
+rS33 ##FB   ##cBT  ->FB   
+RS33 ##FB   ##cBT  ->FB   
+rS33 ##FC   ##cBT  ->FC   
+RS33 ##FC   ##cBT  ->FC   
+rS33 ##FL   ##cBT  ->FL   
+RS33 ##FL   ##cBT  ->FL   
+rS33 ##FM   ##cBT  ->FM   
+RS33 ##FM   ##cBT  ->FM   
+rS33 ##FQ   ##cBT  ->FQ   
+RS33 ##FQ   ##cBT  ->FQ   
+rS33 ##FR   ##cBT  ->FR   
+RS33 ##FR   ##cBT  ->FR   
+rS3A ##FA   ##cBT  ->FA   
+RS3A ##FA   ##cBT  ->ANG  
+rS3A ##FB   ##cBT  ->FB   
+RS3A ##FB   ##cBT  ->BNG  
+rS3A ##FC   ##cBT  ->FC   
+RS3A ##FC   ##cBT  ->CNG  
+rS3A ##FL   ##cBT  ->FL   
+RS3A ##FL   ##cBT  ->LNG  
+rS3A ##FM   ##cBT  ->FM   
+RS3A ##FM   ##cBT  ->MNG  
+rS3A ##FQ   ##cBT  ->FQ   
+RS3A ##FQ   ##cBT  ->QNG  
+rS3A ##FR   ##cBT  ->FR   
+RS3A ##FR   ##cBT  ->RNG  
+FA   ##FA   ##cBT  ->AR2  
+FA   ##FB   ##cBT  ->BR2  
+FA   ##FC   ##cBT  ->CR2  
+FA   ##FL   ##cBT  ->LR2  
+FA   ##FM   ##cBT  ->MR2  
+FA   ##FQ   ##cBT  ->QR2  
+FA   ##FR   ##cBT  ->RR2  
+FB   ##FA   ##cBT  ->AR2  
+FB   ##FB   ##cBT  ->BR2  
+FB   ##FC   ##cBT  ->CR2  
+FB   ##FL   ##cBT  ->LR2  
+FB   ##FM   ##cBT  ->MR2  
+FB   ##FQ   ##cBT  ->QR2  
+FB   ##FR   ##cBT  ->RR2  
+FC   ##FA   ##cBT  ->AR2  
+FC   ##FB   ##cBT  ->BR2  
+FC   ##FC   ##cBT  ->CR2  
+FC   ##FL   ##cBT  ->LR2  
+FC   ##FM   ##cBT  ->MR2  
+FC   ##FQ   ##cBT  ->QR2  
+FC   ##FR   ##cBT  ->RR2  
+FL   ##FA   ##cBT  ->AR2  
+FL   ##FB   ##cBT  ->BR2  
+FL   ##FC   ##cBT  ->CR2  
+FL   ##FL   ##cBT  ->LR2  
+FL   ##FM   ##cBT  ->MR2  
+FL   ##FQ   ##cBT  ->QR2  
+FL   ##FR   ##cBT  ->RR2  
+FM   ##FA   ##cBT  ->AR2  
+FM   ##FB   ##cBT  ->BR2  
+FM   ##FC   ##cBT  ->CR2  
+FM   ##FL   ##cBT  ->LR2  
+FM   ##FM   ##cBT  ->MR2  
+FM   ##FQ   ##cBT  ->QR2  
+FM   ##FR   ##cBT  ->RR2  
+FQ   ##FA   ##cBT  ->AR2  
+FQ   ##FB   ##cBT  ->BR2  
+FQ   ##FC   ##cBT  ->CR2  
+FQ   ##FL   ##cBT  ->LR2  
+FQ   ##FM   ##cBT  ->MR2  
+FQ   ##FQ   ##cBT  ->QR2  
+FQ   ##FR   ##cBT  ->RR2  
+FR   ##FA   ##cBT  ->AR2  
+FR   ##FB   ##cBT  ->BR2  
+FR   ##FC   ##cBT  ->CR2  
+FR   ##FL   ##cBT  ->LR2  
+FR   ##FM   ##cBT  ->MR2  
+FR   ##FQ   ##cBT  ->QR2  
+FR   ##FR   ##cBT  ->RR2  
+AR2  ##FA   ##cBT  ->FA   
+AR2  ##FB   ##cBT  ->FB   
+AR2  ##FC   ##cBT  ->FC   
+AR2  ##FL   ##cBT  ->FL   
+AR2  ##FM   ##cBT  ->FM   
+AR2  ##FQ   ##cBT  ->FQ   
+AR2  ##FR   ##cBT  ->FR   
+BR2  ##FA   ##cBT  ->FA   
+BR2  ##FB   ##cBT  ->FB   
+BR2  ##FC   ##cBT  ->FC   
+BR2  ##FL   ##cBT  ->FL   
+BR2  ##FM   ##cBT  ->FM   
+BR2  ##FQ   ##cBT  ->FQ   
+BR2  ##FR   ##cBT  ->FR   
+CR2  ##FA   ##cBT  ->FA   
+CR2  ##FB   ##cBT  ->FB   
+CR2  ##FC   ##cBT  ->FC   
+CR2  ##FL   ##cBT  ->FL   
+CR2  ##FM   ##cBT  ->FM   
+CR2  ##FQ   ##cBT  ->FQ   
+CR2  ##FR   ##cBT  ->FR   
+LR2  ##FA   ##cBT  ->FA   
+LR2  ##FB   ##cBT  ->FB   
+LR2  ##FC   ##cBT  ->FC   
+LR2  ##FL   ##cBT  ->FL   
+LR2  ##FM   ##cBT  ->FM   
+LR2  ##FQ   ##cBT  ->FQ   
+LR2  ##FR   ##cBT  ->FR   
+MR2  ##FA   ##cBT  ->FA   
+MR2  ##FB   ##cBT  ->FB   
+MR2  ##FC   ##cBT  ->FC   
+MR2  ##FL   ##cBT  ->FL   
+MR2  ##FM   ##cBT  ->FM   
+MR2  ##FQ   ##cBT  ->FQ   
+MR2  ##FR   ##cBT  ->FR   
+QR2  ##FA   ##cBT  ->FA   
+QR2  ##FB   ##cBT  ->FB   
+QR2  ##FC   ##cBT  ->FC   
+QR2  ##FL   ##cBT  ->FL   
+QR2  ##FM   ##cBT  ->FM   
+QR2  ##FQ   ##cBT  ->FQ   
+QR2  ##FR   ##cBT  ->FR   
+RR2  ##FA   ##cBT  ->FA   
+RR2  ##FB   ##cBT  ->FB   
+RR2  ##FC   ##cBT  ->FC   
+RR2  ##FL   ##cBT  ->FL   
+RR2  ##FM   ##cBT  ->FM   
+RR2  ##FQ   ##cBT  ->FQ   
+RR2  ##FR   ##cBT  ->FR   
+www  ##AR2  ##cBT  ->FA   
+www  ##BR2  ##cBT  ->FB   
+www  ##CR2  ##cBT  ->FC   
+www  ##LR2  ##cBT  ->FL   
+www  ##MR2  ##cBT  ->FM   
+www  ##QR2  ##cBT  ->FQ   
+www  ##RR2  ##cBT  ->FR   
+FA   ##AR2  ##cBT  ->FA   
+FA   ##BR2  ##cBT  ->FB   
+FA   ##CR2  ##cBT  ->FC   
+FA   ##LR2  ##cBT  ->FL   
+FA   ##MR2  ##cBT  ->FM   
+FA   ##QR2  ##cBT  ->FQ   
+FA   ##RR2  ##cBT  ->FR   
+FB   ##AR2  ##cBT  ->FA   
+FB   ##BR2  ##cBT  ->FB   
+FB   ##CR2  ##cBT  ->FC   
+FB   ##LR2  ##cBT  ->FL   
+FB   ##MR2  ##cBT  ->FM   
+FB   ##QR2  ##cBT  ->FQ   
+FB   ##RR2  ##cBT  ->FR   
+FC   ##AR2  ##cBT  ->FA   
+FC   ##BR2  ##cBT  ->FB   
+FC   ##CR2  ##cBT  ->FC   
+FC   ##LR2  ##cBT  ->FL   
+FC   ##MR2  ##cBT  ->FM   
+FC   ##QR2  ##cBT  ->FQ   
+FC   ##RR2  ##cBT  ->FR   
+FL   ##AR2  ##cBT  ->FA   
+FL   ##BR2  ##cBT  ->FB   
+FL   ##CR2  ##cBT  ->FC   
+FL   ##LR2  ##cBT  ->FL   
+FL   ##MR2  ##cBT  ->FM   
+FL   ##QR2  ##cBT  ->FQ   
+FL   ##RR2  ##cBT  ->FR   
+FM   ##AR2  ##cBT  ->FA   
+FM   ##BR2  ##cBT  ->FB   
+FM   ##CR2  ##cBT  ->FC   
+FM   ##LR2  ##cBT  ->FL   
+FM   ##MR2  ##cBT  ->FM   
+FM   ##QR2  ##cBT  ->FQ   
+FM   ##RR2  ##cBT  ->FR   
+FQ   ##AR2  ##cBT  ->FA   
+FQ   ##BR2  ##cBT  ->FB   
+FQ   ##CR2  ##cBT  ->FC   
+FQ   ##LR2  ##cBT  ->FL   
+FQ   ##MR2  ##cBT  ->FM   
+FQ   ##QR2  ##cBT  ->FQ   
+FQ   ##RR2  ##cBT  ->FR   
+FR   ##AR2  ##cBT  ->FA   
+FR   ##BR2  ##cBT  ->FB   
+FR   ##CR2  ##cBT  ->FC   
+FR   ##LR2  ##cBT  ->FL   
+FR   ##MR2  ##cBT  ->FM   
+FR   ##QR2  ##cBT  ->FQ   
+FR   ##RR2  ##cBT  ->FR   
+ANG  ##FA   ##cBT  ->ANG  
+AS3A ##ANG  ##cBT  ->ANG  
+BS3A ##ANG  ##cBT  ->ANG  
+CS3A ##ANG  ##cBT  ->ANG  
+LS3A ##ANG  ##cBT  ->ANG  
+MS3A ##ANG  ##cBT  ->ANG  
+QS3A ##ANG  ##cBT  ->ANG  
+RS3A ##ANG  ##cBT  ->ANG  
+ANG  ##FB   ##cBT  ->BNG  
+AS3A ##BNG  ##cBT  ->BNG  
+BS3A ##BNG  ##cBT  ->BNG  
+CS3A ##BNG  ##cBT  ->BNG  
+LS3A ##BNG  ##cBT  ->BNG  
+MS3A ##BNG  ##cBT  ->BNG  
+QS3A ##BNG  ##cBT  ->BNG  
+RS3A ##BNG  ##cBT  ->BNG  
+ANG  ##FC   ##cBT  ->CNG  
+AS3A ##CNG  ##cBT  ->CNG  
+BS3A ##CNG  ##cBT  ->CNG  
+CS3A ##CNG  ##cBT  ->CNG  
+LS3A ##CNG  ##cBT  ->CNG  
+MS3A ##CNG  ##cBT  ->CNG  
+QS3A ##CNG  ##cBT  ->CNG  
+RS3A ##CNG  ##cBT  ->CNG  
+ANG  ##FL   ##cBT  ->LNG  
+AS3A ##LNG  ##cBT  ->LNG  
+BS3A ##LNG  ##cBT  ->LNG  
+CS3A ##LNG  ##cBT  ->LNG  
+LS3A ##LNG  ##cBT  ->LNG  
+MS3A ##LNG  ##cBT  ->LNG  
+QS3A ##LNG  ##cBT  ->LNG  
+RS3A ##LNG  ##cBT  ->LNG  
+ANG  ##FM   ##cBT  ->MNG  
+AS3A ##MNG  ##cBT  ->MNG  
+BS3A ##MNG  ##cBT  ->MNG  
+CS3A ##MNG  ##cBT  ->MNG  
+LS3A ##MNG  ##cBT  ->MNG  
+MS3A ##MNG  ##cBT  ->MNG  
+QS3A ##MNG  ##cBT  ->MNG  
+RS3A ##MNG  ##cBT  ->MNG  
+ANG  ##FQ   ##cBT  ->QNG  
+AS3A ##QNG  ##cBT  ->QNG  
+BS3A ##QNG  ##cBT  ->QNG  
+CS3A ##QNG  ##cBT  ->QNG  
+LS3A ##QNG  ##cBT  ->QNG  
+MS3A ##QNG  ##cBT  ->QNG  
+QS3A ##QNG  ##cBT  ->QNG  
+RS3A ##QNG  ##cBT  ->QNG  
+ANG  ##FR   ##cBT  ->RNG  
+AS3A ##RNG  ##cBT  ->RNG  
+BS3A ##RNG  ##cBT  ->RNG  
+CS3A ##RNG  ##cBT  ->RNG  
+LS3A ##RNG  ##cBT  ->RNG  
+MS3A ##RNG  ##cBT  ->RNG  
+QS3A ##RNG  ##cBT  ->RNG  
+RS3A ##RNG  ##cBT  ->RNG  
+BNG  ##FA   ##cBT  ->ANG  
+BNG  ##FB   ##cBT  ->BNG  
+BNG  ##FC   ##cBT  ->CNG  
+BNG  ##FL   ##cBT  ->LNG  
+BNG  ##FM   ##cBT  ->MNG  
+BNG  ##FQ   ##cBT  ->QNG  
+BNG  ##FR   ##cBT  ->RNG  
+CNG  ##FA   ##cBT  ->ANG  
+CNG  ##FB   ##cBT  ->BNG  
+CNG  ##FC   ##cBT  ->CNG  
+CNG  ##FL   ##cBT  ->LNG  
+CNG  ##FM   ##cBT  ->MNG  
+CNG  ##FQ   ##cBT  ->QNG  
+CNG  ##FR   ##cBT  ->RNG  
+LNG  ##FA   ##cBT  ->ANG  
+LNG  ##FB   ##cBT  ->BNG  
+LNG  ##FC   ##cBT  ->CNG  
+LNG  ##FL   ##cBT  ->LNG  
+LNG  ##FM   ##cBT  ->MNG  
+LNG  ##FQ   ##cBT  ->QNG  
+LNG  ##FR   ##cBT  ->RNG  
+MNG  ##FA   ##cBT  ->ANG  
+MNG  ##FB   ##cBT  ->BNG  
+MNG  ##FC   ##cBT  ->CNG  
+MNG  ##FL   ##cBT  ->LNG  
+MNG  ##FM   ##cBT  ->MNG  
+MNG  ##FQ   ##cBT  ->QNG  
+MNG  ##FR   ##cBT  ->RNG  
+QNG  ##FA   ##cBT  ->ANG  
+QNG  ##FB   ##cBT  ->BNG  
+QNG  ##FC   ##cBT  ->CNG  
+QNG  ##FL   ##cBT  ->LNG  
+QNG  ##FM   ##cBT  ->MNG  
+QNG  ##FQ   ##cBT  ->QNG  
+QNG  ##FR   ##cBT  ->RNG  
+RNG  ##FA   ##cBT  ->ANG  
+RNG  ##FB   ##cBT  ->BNG  
+RNG  ##FC   ##cBT  ->CNG  
+RNG  ##FL   ##cBT  ->LNG  
+RNG  ##FM   ##cBT  ->MNG  
+RNG  ##FQ   ##cBT  ->QNG  
+RNG  ##FR   ##cBT  ->RNG  
+www  ##ANG  ##cBT  ->FA   
+www  ##BNG  ##cBT  ->FB   
+www  ##CNG  ##cBT  ->FC   
+www  ##LNG  ##cBT  ->FL   
+www  ##MNG  ##cBT  ->FM   
+www  ##QNG  ##cBT  ->FQ   
+www  ##RNG  ##cBT  ->FR   
+FA   ##ANG  ##cBT  ->FA   
+FA   ##BNG  ##cBT  ->FB   
+FA   ##CNG  ##cBT  ->FC   
+FA   ##LNG  ##cBT  ->FL   
+FA   ##MNG  ##cBT  ->FM   
+FA   ##QNG  ##cBT  ->FQ   
+FA   ##RNG  ##cBT  ->FR   
+FB   ##ANG  ##cBT  ->FA   
+FB   ##BNG  ##cBT  ->FB   
+FB   ##CNG  ##cBT  ->FC   
+FB   ##LNG  ##cBT  ->FL   
+FB   ##MNG  ##cBT  ->FM   
+FB   ##QNG  ##cBT  ->FQ   
+FB   ##RNG  ##cBT  ->FR   
+FC   ##ANG  ##cBT  ->FA   
+FC   ##BNG  ##cBT  ->FB   
+FC   ##CNG  ##cBT  ->FC   
+FC   ##LNG  ##cBT  ->FL   
+FC   ##MNG  ##cBT  ->FM   
+FC   ##QNG  ##cBT  ->FQ   
+FC   ##RNG  ##cBT  ->FR   
+FL   ##ANG  ##cBT  ->FA   
+FL   ##BNG  ##cBT  ->FB   
+FL   ##CNG  ##cBT  ->FC   
+FL   ##LNG  ##cBT  ->FL   
+FL   ##MNG  ##cBT  ->FM   
+FL   ##QNG  ##cBT  ->FQ   
+FL   ##RNG  ##cBT  ->FR   
+FM   ##ANG  ##cBT  ->FA   
+FM   ##BNG  ##cBT  ->FB   
+FM   ##CNG  ##cBT  ->FC   
+FM   ##LNG  ##cBT  ->FL   
+FM   ##MNG  ##cBT  ->FM   
+FM   ##QNG  ##cBT  ->FQ   
+FM   ##RNG  ##cBT  ->FR   
+FQ   ##ANG  ##cBT  ->FA   
+FQ   ##BNG  ##cBT  ->FB   
+FQ   ##CNG  ##cBT  ->FC   
+FQ   ##LNG  ##cBT  ->FL   
+FQ   ##MNG  ##cBT  ->FM   
+FQ   ##QNG  ##cBT  ->FQ   
+FQ   ##RNG  ##cBT  ->FR   
+FR   ##ANG  ##cBT  ->FA   
+FR   ##BNG  ##cBT  ->FB   
+FR   ##CNG  ##cBT  ->FC   
+FR   ##LNG  ##cBT  ->FL   
+FR   ##MNG  ##cBT  ->FM   
+FR   ##QNG  ##cBT  ->FQ   
+FR   ##RNG  ##cBT  ->FR   
+AS3B ##ANG  ##cBT  ->FA   
+AS3B ##BNG  ##cBT  ->FB   
+AS3B ##CNG  ##cBT  ->FC   
+AS3B ##LNG  ##cBT  ->FL   
+AS3B ##MNG  ##cBT  ->FM   
+AS3B ##QNG  ##cBT  ->FQ   
+AS3B ##RNG  ##cBT  ->FR   
+BS3B ##ANG  ##cBT  ->FA   
+BS3B ##BNG  ##cBT  ->FB   
+BS3B ##CNG  ##cBT  ->FC   
+BS3B ##LNG  ##cBT  ->FL   
+BS3B ##MNG  ##cBT  ->FM   
+BS3B ##QNG  ##cBT  ->FQ   
+BS3B ##RNG  ##cBT  ->FR   
+CS3B ##ANG  ##cBT  ->FA   
+CS3B ##BNG  ##cBT  ->FB   
+CS3B ##CNG  ##cBT  ->FC   
+CS3B ##LNG  ##cBT  ->FL   
+CS3B ##MNG  ##cBT  ->FM   
+CS3B ##QNG  ##cBT  ->FQ   
+CS3B ##RNG  ##cBT  ->FR   
+LS3B ##ANG  ##cBT  ->FA   
+LS3B ##BNG  ##cBT  ->FB   
+LS3B ##CNG  ##cBT  ->FC   
+LS3B ##LNG  ##cBT  ->FL   
+LS3B ##MNG  ##cBT  ->FM   
+LS3B ##QNG  ##cBT  ->FQ   
+LS3B ##RNG  ##cBT  ->FR   
+MS3B ##ANG  ##cBT  ->FA   
+MS3B ##BNG  ##cBT  ->FB   
+MS3B ##CNG  ##cBT  ->FC   
+MS3B ##LNG  ##cBT  ->FL   
+MS3B ##MNG  ##cBT  ->FM   
+MS3B ##QNG  ##cBT  ->FQ   
+MS3B ##RNG  ##cBT  ->FR   
+QS3B ##ANG  ##cBT  ->FA   
+QS3B ##BNG  ##cBT  ->FB   
+QS3B ##CNG  ##cBT  ->FC   
+QS3B ##LNG  ##cBT  ->FL   
+QS3B ##MNG  ##cBT  ->FM   
+QS3B ##QNG  ##cBT  ->FQ   
+QS3B ##RNG  ##cBT  ->FR   
+RS3B ##ANG  ##cBT  ->FA   
+RS3B ##BNG  ##cBT  ->FB   
+RS3B ##CNG  ##cBT  ->FC   
+RS3B ##LNG  ##cBT  ->FL   
+RS3B ##MNG  ##cBT  ->FM   
+RS3B ##QNG  ##cBT  ->FQ   
+RS3B ##RNG  ##cBT  ->FR   
+ANG  ##ANG  ##cBT  ->FA   
+ANG  ##BNG  ##cBT  ->FB   
+ANG  ##CNG  ##cBT  ->FC   
+ANG  ##LNG  ##cBT  ->FL   
+ANG  ##MNG  ##cBT  ->FM   
+ANG  ##QNG  ##cBT  ->FQ   
+ANG  ##RNG  ##cBT  ->FR   
+BNG  ##ANG  ##cBT  ->FA   
+BNG  ##BNG  ##cBT  ->FB   
+BNG  ##CNG  ##cBT  ->FC   
+BNG  ##LNG  ##cBT  ->FL   
+BNG  ##MNG  ##cBT  ->FM   
+BNG  ##QNG  ##cBT  ->FQ   
+BNG  ##RNG  ##cBT  ->FR   
+CNG  ##ANG  ##cBT  ->FA   
+CNG  ##BNG  ##cBT  ->FB   
+CNG  ##CNG  ##cBT  ->FC   
+CNG  ##LNG  ##cBT  ->FL   
+CNG  ##MNG  ##cBT  ->FM   
+CNG  ##QNG  ##cBT  ->FQ   
+CNG  ##RNG  ##cBT  ->FR   
+LNG  ##ANG  ##cBT  ->FA   
+LNG  ##BNG  ##cBT  ->FB   
+LNG  ##CNG  ##cBT  ->FC   
+LNG  ##LNG  ##cBT  ->FL   
+LNG  ##MNG  ##cBT  ->FM   
+LNG  ##QNG  ##cBT  ->FQ   
+LNG  ##RNG  ##cBT  ->FR   
+MNG  ##ANG  ##cBT  ->FA   
+MNG  ##BNG  ##cBT  ->FB   
+MNG  ##CNG  ##cBT  ->FC   
+MNG  ##LNG  ##cBT  ->FL   
+MNG  ##MNG  ##cBT  ->FM   
+MNG  ##QNG  ##cBT  ->FQ   
+MNG  ##RNG  ##cBT  ->FR   
+QNG  ##ANG  ##cBT  ->FA   
+QNG  ##BNG  ##cBT  ->FB   
+QNG  ##CNG  ##cBT  ->FC   
+QNG  ##LNG  ##cBT  ->FL   
+QNG  ##MNG  ##cBT  ->FM   
+QNG  ##QNG  ##cBT  ->FQ   
+QNG  ##RNG  ##cBT  ->FR   
+RNG  ##ANG  ##cBT  ->FA   
+RNG  ##BNG  ##cBT  ->FB   
+RNG  ##CNG  ##cBT  ->FC   
+RNG  ##LNG  ##cBT  ->FL   
+RNG  ##MNG  ##cBT  ->FM   
+RNG  ##QNG  ##cBT  ->FQ   
+RNG  ##RNG  ##cBT  ->FR   
+L    ##AR2  ##cBT  ->FA   
+L    ##BR2  ##cBT  ->FB   
+L    ##CR2  ##cBT  ->FC   
+L    ##LR2  ##cBT  ->FL   
+L    ##MR2  ##cBT  ->FM   
+L    ##QR2  ##cBT  ->FQ   
+L    ##RR2  ##cBT  ->FR   
+L    ##ANG  ##cBT  ->FA   
+L    ##BNG  ##cBT  ->FB   
+L    ##CNG  ##cBT  ->FC   
+L    ##LNG  ##cBT  ->FL   
+L    ##MNG  ##cBT  ->FM   
+L    ##QNG  ##cBT  ->FQ   
+L    ##RNG  ##cBT  ->FR   
+aS3BT3##FA   ##cBT  ->AS33 
+aS3BT3##FB   ##cBT  ->BS33 
+aS3BT3##FC   ##cBT  ->CS33 
+aS3BT3##FL   ##cBT  ->LS33 
+aS3BT3##FM   ##cBT  ->MS33 
+aS3BT3##FQ   ##cBT  ->QS33 
+aS3BT3##FR   ##cBT  ->RS33 
+bS3BT3##FA   ##cBT  ->AS33 
+bS3BT3##FB   ##cBT  ->BS33 
+bS3BT3##FC   ##cBT  ->CS33 
+bS3BT3##FL   ##cBT  ->LS33 
+bS3BT3##FM   ##cBT  ->MS33 
+bS3BT3##FQ   ##cBT  ->QS33 
+bS3BT3##FR   ##cBT  ->RS33 
+cS3BT3##FA   ##cBT  ->AS33 
+cS3BT3##FB   ##cBT  ->BS33 
+cS3BT3##FC   ##cBT  ->CS33 
+cS3BT3##FL   ##cBT  ->LS33 
+cS3BT3##FM   ##cBT  ->MS33 
+cS3BT3##FQ   ##cBT  ->QS33 
+cS3BT3##FR   ##cBT  ->RS33 
+lS3BT3##FA   ##cBT  ->AS33 
+lS3BT3##FB   ##cBT  ->BS33 
+lS3BT3##FC   ##cBT  ->CS33 
+lS3BT3##FL   ##cBT  ->LS33 
+lS3BT3##FM   ##cBT  ->MS33 
+lS3BT3##FQ   ##cBT  ->QS33 
+lS3BT3##FR   ##cBT  ->RS33 
+mS3BT3##FA   ##cBT  ->AS33 
+mS3BT3##FB   ##cBT  ->BS33 
+mS3BT3##FC   ##cBT  ->CS33 
+mS3BT3##FL   ##cBT  ->LS33 
+mS3BT3##FM   ##cBT  ->MS33 
+mS3BT3##FQ   ##cBT  ->QS33 
+mS3BT3##FR   ##cBT  ->RS33 
+qS3BT3##FA   ##cBT  ->AS33 
+qS3BT3##FB   ##cBT  ->BS33 
+qS3BT3##FC   ##cBT  ->CS33 
+qS3BT3##FL   ##cBT  ->LS33 
+qS3BT3##FM   ##cBT  ->MS33 
+qS3BT3##FQ   ##cBT  ->QS33 
+qS3BT3##FR   ##cBT  ->RS33 
+rS3BT3##FA   ##cBT  ->AS33 
+rS3BT3##FB   ##cBT  ->BS33 
+rS3BT3##FC   ##cBT  ->CS33 
+rS3BT3##FL   ##cBT  ->LS33 
+rS3BT3##FM   ##cBT  ->MS33 
+rS3BT3##FQ   ##cBT  ->QS33 
+rS3BT3##FR   ##cBT  ->RS33 
+AT3  ##AS33 ##cBT  ->AS3A 
+AT3  ##AS3A ##cBT  ->AS3B 
+AT3  ##AS3B ##cBT  ->FA   
+BT3  ##AS33 ##cBT  ->AS3A 
+BT3  ##AS3A ##cBT  ->AS3B 
+BT3  ##AS3B ##cBT  ->FA   
+CT3  ##AS33 ##cBT  ->AS3A 
+CT3  ##AS3A ##cBT  ->AS3B 
+CT3  ##AS3B ##cBT  ->FA   
+LT3  ##AS33 ##cBT  ->AS3A 
+LT3  ##AS3A ##cBT  ->AS3B 
+LT3  ##AS3B ##cBT  ->FA   
+MT3  ##AS33 ##cBT  ->AS3A 
+MT3  ##AS3A ##cBT  ->AS3B 
+MT3  ##AS3B ##cBT  ->FA   
+QT3  ##AS33 ##cBT  ->AS3A 
+QT3  ##AS3A ##cBT  ->AS3B 
+QT3  ##AS3B ##cBT  ->FA   
+RT3  ##AS33 ##cBT  ->AS3A 
+RT3  ##AS3A ##cBT  ->AS3B 
+RT3  ##AS3B ##cBT  ->FA   
+AT3  ##BS33 ##cBT  ->BS3A 
+AT3  ##BS3A ##cBT  ->BS3B 
+AT3  ##BS3B ##cBT  ->FB   
+BT3  ##BS33 ##cBT  ->BS3A 
+BT3  ##BS3A ##cBT  ->BS3B 
+BT3  ##BS3B ##cBT  ->FB   
+CT3  ##BS33 ##cBT  ->BS3A 
+CT3  ##BS3A ##cBT  ->BS3B 
+CT3  ##BS3B ##cBT  ->FB   
+LT3  ##BS33 ##cBT  ->BS3A 
+LT3  ##BS3A ##cBT  ->BS3B 
+LT3  ##BS3B ##cBT  ->FB   
+MT3  ##BS33 ##cBT  ->BS3A 
+MT3  ##BS3A ##cBT  ->BS3B 
+MT3  ##BS3B ##cBT  ->FB   
+QT3  ##BS33 ##cBT  ->BS3A 
+QT3  ##BS3A ##cBT  ->BS3B 
+QT3  ##BS3B ##cBT  ->FB   
+RT3  ##BS33 ##cBT  ->BS3A 
+RT3  ##BS3A ##cBT  ->BS3B 
+RT3  ##BS3B ##cBT  ->FB   
+AT3  ##CS33 ##cBT  ->CS3A 
+AT3  ##CS3A ##cBT  ->CS3B 
+AT3  ##CS3B ##cBT  ->FC   
+BT3  ##CS33 ##cBT  ->CS3A 
+BT3  ##CS3A ##cBT  ->CS3B 
+BT3  ##CS3B ##cBT  ->FC   
+CT3  ##CS33 ##cBT  ->CS3A 
+CT3  ##CS3A ##cBT  ->CS3B 
+CT3  ##CS3B ##cBT  ->FC   
+LT3  ##CS33 ##cBT  ->CS3A 
+LT3  ##CS3A ##cBT  ->CS3B 
+LT3  ##CS3B ##cBT  ->FC   
+MT3  ##CS33 ##cBT  ->CS3A 
+MT3  ##CS3A ##cBT  ->CS3B 
+MT3  ##CS3B ##cBT  ->FC   
+QT3  ##CS33 ##cBT  ->CS3A 
+QT3  ##CS3A ##cBT  ->CS3B 
+QT3  ##CS3B ##cBT  ->FC   
+RT3  ##CS33 ##cBT  ->CS3A 
+RT3  ##CS3A ##cBT  ->CS3B 
+RT3  ##CS3B ##cBT  ->FC   
+AT3  ##LS33 ##cBT  ->LS3A 
+AT3  ##LS3A ##cBT  ->LS3B 
+AT3  ##LS3B ##cBT  ->FL   
+BT3  ##LS33 ##cBT  ->LS3A 
+BT3  ##LS3A ##cBT  ->LS3B 
+BT3  ##LS3B ##cBT  ->FL   
+CT3  ##LS33 ##cBT  ->LS3A 
+CT3  ##LS3A ##cBT  ->LS3B 
+CT3  ##LS3B ##cBT  ->FL   
+LT3  ##LS33 ##cBT  ->LS3A 
+LT3  ##LS3A ##cBT  ->LS3B 
+LT3  ##LS3B ##cBT  ->FL   
+MT3  ##LS33 ##cBT  ->LS3A 
+MT3  ##LS3A ##cBT  ->LS3B 
+MT3  ##LS3B ##cBT  ->FL   
+QT3  ##LS33 ##cBT  ->LS3A 
+QT3  ##LS3A ##cBT  ->LS3B 
+QT3  ##LS3B ##cBT  ->FL   
+RT3  ##LS33 ##cBT  ->LS3A 
+RT3  ##LS3A ##cBT  ->LS3B 
+RT3  ##LS3B ##cBT  ->FL   
+AT3  ##MS33 ##cBT  ->MS3A 
+AT3  ##MS3A ##cBT  ->MS3B 
+AT3  ##MS3B ##cBT  ->FM   
+BT3  ##MS33 ##cBT  ->MS3A 
+BT3  ##MS3A ##cBT  ->MS3B 
+BT3  ##MS3B ##cBT  ->FM   
+CT3  ##MS33 ##cBT  ->MS3A 
+CT3  ##MS3A ##cBT  ->MS3B 
+CT3  ##MS3B ##cBT  ->FM   
+LT3  ##MS33 ##cBT  ->MS3A 
+LT3  ##MS3A ##cBT  ->MS3B 
+LT3  ##MS3B ##cBT  ->FM   
+MT3  ##MS33 ##cBT  ->MS3A 
+MT3  ##MS3A ##cBT  ->MS3B 
+MT3  ##MS3B ##cBT  ->FM   
+QT3  ##MS33 ##cBT  ->MS3A 
+QT3  ##MS3A ##cBT  ->MS3B 
+QT3  ##MS3B ##cBT  ->FM   
+RT3  ##MS33 ##cBT  ->MS3A 
+RT3  ##MS3A ##cBT  ->MS3B 
+RT3  ##MS3B ##cBT  ->FM   
+AT3  ##QS33 ##cBT  ->QS3A 
+AT3  ##QS3A ##cBT  ->QS3B 
+AT3  ##QS3B ##cBT  ->FQ   
+BT3  ##QS33 ##cBT  ->QS3A 
+BT3  ##QS3A ##cBT  ->QS3B 
+BT3  ##QS3B ##cBT  ->FQ   
+CT3  ##QS33 ##cBT  ->QS3A 
+CT3  ##QS3A ##cBT  ->QS3B 
+CT3  ##QS3B ##cBT  ->FQ   
+LT3  ##QS33 ##cBT  ->QS3A 
+LT3  ##QS3A ##cBT  ->QS3B 
+LT3  ##QS3B ##cBT  ->FQ   
+MT3  ##QS33 ##cBT  ->QS3A 
+MT3  ##QS3A ##cBT  ->QS3B 
+MT3  ##QS3B ##cBT  ->FQ   
+QT3  ##QS33 ##cBT  ->QS3A 
+QT3  ##QS3A ##cBT  ->QS3B 
+QT3  ##QS3B ##cBT  ->FQ   
+RT3  ##QS33 ##cBT  ->QS3A 
+RT3  ##QS3A ##cBT  ->QS3B 
+RT3  ##QS3B ##cBT  ->FQ   
+AT3  ##RS33 ##cBT  ->RS3A 
+AT3  ##RS3A ##cBT  ->RS3B 
+AT3  ##RS3B ##cBT  ->FR   
+BT3  ##RS33 ##cBT  ->RS3A 
+BT3  ##RS3A ##cBT  ->RS3B 
+BT3  ##RS3B ##cBT  ->FR   
+CT3  ##RS33 ##cBT  ->RS3A 
+CT3  ##RS3A ##cBT  ->RS3B 
+CT3  ##RS3B ##cBT  ->FR   
+LT3  ##RS33 ##cBT  ->RS3A 
+LT3  ##RS3A ##cBT  ->RS3B 
+LT3  ##RS3B ##cBT  ->FR   
+MT3  ##RS33 ##cBT  ->RS3A 
+MT3  ##RS3A ##cBT  ->RS3B 
+MT3  ##RS3B ##cBT  ->FR   
+QT3  ##RS33 ##cBT  ->RS3A 
+QT3  ##RS3A ##cBT  ->RS3B 
+QT3  ##RS3B ##cBT  ->FR   
+RT3  ##RS33 ##cBT  ->RS3A 
+RT3  ##RS3A ##cBT  ->RS3B 
+RT3  ##RS3B ##cBT  ->FR   
+aS33T3##FA   ##cBT  ->FA   
+aS33T3##FB   ##cBT  ->FB   
+aS33T3##FC   ##cBT  ->FC   
+aS33T3##FL   ##cBT  ->FL   
+aS33T3##FM   ##cBT  ->FM   
+aS33T3##FQ   ##cBT  ->FQ   
+aS33T3##FR   ##cBT  ->FR   
+aS3AT3##FA   ##cBT  ->FA   
+aS3AT3##FB   ##cBT  ->FB   
+aS3AT3##FC   ##cBT  ->FC   
+aS3AT3##FL   ##cBT  ->FL   
+aS3AT3##FM   ##cBT  ->FM   
+aS3AT3##FQ   ##cBT  ->FQ   
+aS3AT3##FR   ##cBT  ->FR   
+bS33T3##FA   ##cBT  ->FA   
+bS33T3##FB   ##cBT  ->FB   
+bS33T3##FC   ##cBT  ->FC   
+bS33T3##FL   ##cBT  ->FL   
+bS33T3##FM   ##cBT  ->FM   
+bS33T3##FQ   ##cBT  ->FQ   
+bS33T3##FR   ##cBT  ->FR   
+bS3AT3##FA   ##cBT  ->FA   
+bS3AT3##FB   ##cBT  ->FB   
+bS3AT3##FC   ##cBT  ->FC   
+bS3AT3##FL   ##cBT  ->FL   
+bS3AT3##FM   ##cBT  ->FM   
+bS3AT3##FQ   ##cBT  ->FQ   
+bS3AT3##FR   ##cBT  ->FR   
+cS33T3##FA   ##cBT  ->FA   
+cS33T3##FB   ##cBT  ->FB   
+cS33T3##FC   ##cBT  ->FC   
+cS33T3##FL   ##cBT  ->FL   
+cS33T3##FM   ##cBT  ->FM   
+cS33T3##FQ   ##cBT  ->FQ   
+cS33T3##FR   ##cBT  ->FR   
+cS3AT3##FA   ##cBT  ->FA   
+cS3AT3##FB   ##cBT  ->FB   
+cS3AT3##FC   ##cBT  ->FC   
+cS3AT3##FL   ##cBT  ->FL   
+cS3AT3##FM   ##cBT  ->FM   
+cS3AT3##FQ   ##cBT  ->FQ   
+cS3AT3##FR   ##cBT  ->FR   
+lS33T3##FA   ##cBT  ->FA   
+lS33T3##FB   ##cBT  ->FB   
+lS33T3##FC   ##cBT  ->FC   
+lS33T3##FL   ##cBT  ->FL   
+lS33T3##FM   ##cBT  ->FM   
+lS33T3##FQ   ##cBT  ->FQ   
+lS33T3##FR   ##cBT  ->FR   
+lS3AT3##FA   ##cBT  ->FA   
+lS3AT3##FB   ##cBT  ->FB   
+lS3AT3##FC   ##cBT  ->FC   
+lS3AT3##FL   ##cBT  ->FL   
+lS3AT3##FM   ##cBT  ->FM   
+lS3AT3##FQ   ##cBT  ->FQ   
+lS3AT3##FR   ##cBT  ->FR   
+mS33T3##FA   ##cBT  ->FA   
+mS33T3##FB   ##cBT  ->FB   
+mS33T3##FC   ##cBT  ->FC   
+mS33T3##FL   ##cBT  ->FL   
+mS33T3##FM   ##cBT  ->FM   
+mS33T3##FQ   ##cBT  ->FQ   
+mS33T3##FR   ##cBT  ->FR   
+mS3AT3##FA   ##cBT  ->FA   
+mS3AT3##FB   ##cBT  ->FB   
+mS3AT3##FC   ##cBT  ->FC   
+mS3AT3##FL   ##cBT  ->FL   
+mS3AT3##FM   ##cBT  ->FM   
+mS3AT3##FQ   ##cBT  ->FQ   
+mS3AT3##FR   ##cBT  ->FR   
+qS33T3##FA   ##cBT  ->FA   
+qS33T3##FB   ##cBT  ->FB   
+qS33T3##FC   ##cBT  ->FC   
+qS33T3##FL   ##cBT  ->FL   
+qS33T3##FM   ##cBT  ->FM   
+qS33T3##FQ   ##cBT  ->FQ   
+qS33T3##FR   ##cBT  ->FR   
+qS3AT3##FA   ##cBT  ->FA   
+qS3AT3##FB   ##cBT  ->FB   
+qS3AT3##FC   ##cBT  ->FC   
+qS3AT3##FL   ##cBT  ->FL   
+qS3AT3##FM   ##cBT  ->FM   
+qS3AT3##FQ   ##cBT  ->FQ   
+qS3AT3##FR   ##cBT  ->FR   
+rS33T3##FA   ##cBT  ->FA   
+rS33T3##FB   ##cBT  ->FB   
+rS33T3##FC   ##cBT  ->FC   
+rS33T3##FL   ##cBT  ->FL   
+rS33T3##FM   ##cBT  ->FM   
+rS33T3##FQ   ##cBT  ->FQ   
+rS33T3##FR   ##cBT  ->FR   
+rS3AT3##FA   ##cBT  ->FA   
+rS3AT3##FB   ##cBT  ->FB   
+rS3AT3##FC   ##cBT  ->FC   
+rS3AT3##FL   ##cBT  ->FL   
+rS3AT3##FM   ##cBT  ->FM   
+rS3AT3##FQ   ##cBT  ->FQ   
+rS3AT3##FR   ##cBT  ->FR   
+LT3  ##AR2  ##cBT  ->FA   
+LT3  ##BR2  ##cBT  ->FB   
+LT3  ##CR2  ##cBT  ->FC   
+LT3  ##LR2  ##cBT  ->FL   
+LT3  ##MR2  ##cBT  ->FM   
+LT3  ##QR2  ##cBT  ->FQ   
+LT3  ##RR2  ##cBT  ->FR   
+LT3  ##ANG  ##cBT  ->FA   
+LT3  ##BNG  ##cBT  ->FB   
+LT3  ##CNG  ##cBT  ->FC   
+LT3  ##LNG  ##cBT  ->FL   
+LT3  ##MNG  ##cBT  ->FM   
+LT3  ##QNG  ##cBT  ->FQ   
+LT3  ##RNG  ##cBT  ->FR   
+cBT  ##L    ##www  ->T3   
+cBT  ##L    ##FT2  ->T3   
+cBT  ##L    ##W    ->TR   
+cBT  ##LT3  ##L    ->TR   
+cBT  ##LT3  ##www  ->T3   
+cBT  ##LT3  ##FT2  ->T3   
+cBT  ##LT3  ##W    ->TR   
+cBT  ##T3   ##www  ->L    
+cBT  ##T3   ##L    ->L    
+cBT  ##L    ##T3   ->T3   
+cBT  ##L    ##AT3  ->AT3  
+cBT  ##L    ##BT3  ->BT3  
+cBT  ##L    ##CT3  ->CT3  
+cBT  ##L    ##LT3  ->LT3  
+cBT  ##L    ##MT3  ->MT3  
+cBT  ##L    ##QT3  ->QT3  
+cBT  ##L    ##RT3  ->RT3  
+L    ##cBT  ##www  ->L    
+www  ##cBT  ##T3   ->T3   
+L    ##cBT  ##T3   ->T3   
+C    ##cBT  ##T3   ->CT3  
+M    ##cBT  ##T3   ->CT3  
+NG   ##cBT  ##T3   ->MT3  
+LT3  ##cBT  ##T3   ->T3   
+CT3  ##cBT  ##T3   ->CT3  
+MT3  ##cBT  ##T3   ->CT3  
+CB   ##cBT  ##T3   ->cBT  
+ANG  ##cBT  ##T3   ->MT3  
+BNG  ##cBT  ##T3   ->MT3  
+CNG  ##cBT  ##T3   ->MT3  
+LNG  ##cBT  ##T3   ->MT3  
+MNG  ##cBT  ##T3   ->MT3  
+QNG  ##cBT  ##T3   ->MT3  
+RNG  ##cBT  ##T3   ->MT3  
+TR   ##cBT  ##T3   ->T3   
+cBT  ##cBT  ##T3   ->T3   
