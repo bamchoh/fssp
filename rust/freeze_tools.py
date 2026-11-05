@@ -1217,6 +1217,219 @@ def add_meeting():
     print(f'add_meeting: states={len(states)} rules={len(ordered)} '
           f'(overrides={n_override[0]})')
 
+def add_ab():
+    # ②-C (A3 の解凍 = a/b 会合機構、2026-11-06 再設計版):
+    #   前進対: b 波 bF(定刻)と a 波 aF(1 歩後ろ)。I_i 右端の CB 入庫で管路
+    #     入口が生成する(rust)。未起床セル上を 1/1 で右走し、壁で反射して
+    #     bF→bR、aF→T3 になる。b の前進停留(I_{i+1}..I_p 左端で +1)と a の
+    #     帰還停留(D_p..D_{i+1} 入口で +1)は管路入口の 1 歩遅延線(rust)。
+    #   帰還対: bR / T3 は未起床セル(純)・起床済みセル(<X>bw)・凍結セル
+    #     (F_v⊕bw)を複合で 1/1 貫通する(不活性)。管路が提示する帰還波は
+    #     境界マーカー付き WT3 / WbR(管路の口 W と区別しない鍵が凍結起動
+    #     (C,L,W)→CB を壊すため)。
+    #   会合: 自対の管路 D_i 入口で b 帰還の 1 セル後ろに a がいる(rust 判定)
+    #     と提示値が abX になり、(l, F_v, abX) が (l, F_v, FT) と同じ解凍。
+    #   同一セル衝突: 前進波と帰還波が同じセルに着地する(対向 1/1 で必ず起
+    #     きる)ので複合 bF⊕bw / aF⊕bw / CB⊕bw(右端の担体表示と帰還波)。
+    #     管路の口は複合の「管に入る成分」だけを取り込む(rust 射影)。
+    #   生成法: (1) 未起床セル上の波の重ね合わせ規則を直接生成、(2) 既存の
+    #     T3 鍵を bR に鏡写し(bR ≡ T3 の挙動)、(3) 解凍鍵 abX、(4) ホスト
+    #     (L/X/F_v/CB/W/bF/aF)に波が乗る複合鍵を既存鍵から不動点で複製
+    #     (右レーン=吸収、中央=放出、左レーン=通過済み)。既存鍵は上書きしない。
+    states, rules, pre, post = load(OUT_RULE)
+    rulemap = parse_rules(rules)
+    names = [state_name(s) for s in states]
+    held = ['A', 'B', 'C', 'L', 'M', 'Q', 'R']
+    fv = ['F' + h for h in held]   # FB(凍結 B)は状態 0 と同じ名前だが凍結値として実在
+    lo = {h: h.lower() for h in held}
+    phn = ('S33', 'S3A', 'S3B')
+    journeys = [lo[h] + ph for h in held for ph in phn]
+    bws = ('T3', 'bR')
+    fws = ('bF', 'aF')
+    hosts_plain = ['L'] + [h for h in held if h != 'L'] + fv + ['CB', 'W'] + list(fws)
+
+    def plus(h, bw):
+        if h == 'L':
+            return bw
+        if h in held or h in fv or h in ('CB', 'W') or h in fws:
+            return h + bw
+        if h in journeys and bw == 'T3':
+            return h + 'T3'
+        if h == 'F':
+            return 'F'          # 発火は波を消す(発火時刻に波が重なる鍵の目標)
+        return None
+
+    def split(x):
+        # 複合名 → (host, bw)。純ホストは (x, None)。
+        if x in bws:
+            return ('L', x)
+        if x == 'abX':
+            return (x, None)
+        for bw in bws:
+            if x.endswith(bw) and len(x) > 2:
+                h = x[:-2]
+                if h in hosts_plain or h in journeys:
+                    return (h, bw)
+        return (x, None)
+
+    newn = list(fws) + ['bR', 'abX', 'WT3', 'WbR', 'LbR']
+    for h in [x for x in held if x != 'L'] + fv + ['CB'] + list(fws):
+        for bw in bws:
+            newn.append(h + bw)
+    for nm in newn:
+        if nm not in names:
+            states.append(pad(nm) + '@101010,A0B0E0,others')
+            names.append(nm)
+    lane_set = set(x.strip() for x in names)
+    n_add = [0]
+
+    def put(key, target, keep=True):
+        if any(x not in lane_set for x in key) or target not in lane_set:
+            return
+        if keep and key in rulemap:
+            return
+        if rulemap.get(key) != target:
+            rulemap[key] = target
+            n_add[0] += 1
+
+    # ── 1. 未起床セル上の波の重ね合わせ ─────────────────────────────────
+    def fw_of(x):
+        h, _ = split(x)
+        return h if h in fws else None
+
+    def bw_of(x):
+        return split(x)[1]
+
+    reflect = {'bF': 'bR', 'aF': 'T3'}
+
+    def combine(fw, bw):
+        if fw is None and bw is None:
+            return 'L'
+        if bw is None:
+            return fw
+        if fw is None:
+            return bw
+        return fw + bw
+
+    comps_fw = [f + bw for f in fws for bw in bws]
+    xbw = [plus(h, bw) for h in held if h != 'L' for bw in bws]
+    # 起床セル複合 <X>bw が左右に来る鍵は choreography の遷移を伴うので
+    # ここでは生成せず、既存鍵からの複製(4.)に任せる。
+    c_set = ['L'] + list(fws) + list(bws) + comps_fw
+    l_set = ['L', 'www'] + list(fws) + list(bws) + comps_fw
+    r_set = (['L', 'www', 'W', 'FT2', 'WT3', 'WbR'] + list(fws) + list(bws)
+             + comps_fw)
+    n1 = 0
+    for c in c_set:
+        for l in l_set:
+            for r in r_set:
+                bw = reflect.get(fw_of(c)) if r == 'www' else bw_of(r)
+                before = n_add[0]
+                put((l, c, r), combine(fw_of(l), bw))
+                n1 += n_add[0] - before
+
+    # 右隣の前進波(bF/aF、その複合)は右へ去る=この セルには見えない: 起動
+    # 前兆(NG/C/M)や起床セルが右隣に前進波を見る鍵は (l, c, L) と同じ遷移
+    # (複合なら帰還成分だけ乗る)。1 セル区間で起動前線が壁反射中の対に追い付く
+    # 配置で (NG,L,bFT3) が未定義になった(n=6 -f 2,4 実測)。
+    n1b = 0
+    for (l, c, r), t in list(rulemap.items()):
+        if r != 'L' or (c != 'L' and c not in held and c not in fv):
+            continue
+        if fw_of(l) is not None or l in bws or l in comps_fw:
+            continue   # 未起床セルの波の重ね合わせは上で生成済み
+        for f in fws:
+            before = n_add[0]
+            put((l, c, f), t)
+            for bw in bws:
+                tt = plus(t, bw) if split(t)[1] is None else None
+                if tt:
+                    put((l, c, f + bw), tt)
+            n1b += n_add[0] - before
+    n1 += n1b
+    # 1 セル区間(i>=2)の起動: NG 到着時の表示を担体 CB にする(自身が右端。
+    # (L,CB,W)→FL で次ステップ凍結、管路入口が CB を拾って a/b 対を生成)。
+    put(('NG', 'L', 'W'), 'CB')
+    # ── 2. 既存 T3 鍵の bR 鏡写し(bR は T3 と同じ挙動で貫通する) ──────────
+    def mirror(x):
+        h, bw = split(x)
+        if bw == 'T3':
+            if x == 'LT3':
+                return 'LbR'         # 起床複合 <L>T3 は純 T3 と別状態(鏡も別)
+            return plus(h, 'bR')     # journey 複合は None → 鍵ごとスキップ
+        return x
+
+    n2 = 0
+    for (l, c, r), t in list(rulemap.items()):
+        if not any('T3' in x for x in (l, c, r, t)):
+            continue
+        ml, mc, mr, mt = mirror(l), mirror(c), mirror(r), mirror(t)
+        if None in (ml, mc, mr, mt):
+            continue
+        if (ml, mc, mr) == (l, c, r):
+            continue
+        before = n_add[0]
+        put((ml, mc, mr), mt)
+        n2 += n_add[0] - before
+
+    # ── 3. 解凍鍵: (l, F_v, abX) = (l, F_v, FT) ─────────────────────────
+    n3 = 0
+    for (l, c, r), t in list(rulemap.items()):
+        if r != 'FT':
+            continue
+        before = n_add[0]
+        put((l, c, 'abX'), t)      # 中央は F_v のほか journey/R2/NG 付き凍結値も
+        if c in fv:
+            for bw in bws:
+                # 自身が運ぶ帰還波は左へ去るので解凍先に波は付けない
+                # ((L,FMbR,MbR) 未定義= FLbR→MbR の幽霊波、n=9 -f 3,5,8 実測)
+                put((l, c + bw, 'abX'), t)
+        n3 += n_add[0] - before
+
+    # ── 4. ホストに波が乗る複合鍵の不動点複製 ───────────────────────────
+    carriers = set(hosts_plain) | set(bws) | set(comps_fw) | set(xbw) \
+        | set(v + bw for v in fv for bw in bws) | set('CB' + bw for bw in bws)
+    n4 = 0
+    for _round in range(6):
+        added = 0
+        for (l, c, r), t in list(rulemap.items()):
+            cands = []
+            hl, bl = split(l)
+            hc, bc = split(c)
+            hr, br_ = split(r)
+            ht, bt = split(t)
+            # (A) 右レーンの吸収: r が素ホストで、中央が波を運べるとき
+            if br_ is None and hr in hosts_plain and c in carriers:
+                for bw in bws:
+                    nr = plus(hr, bw)
+                    nt = plus(ht, bw) if bt is None else (t if bt == bw else None)
+                    if nr and nt:
+                        cands.append(((l, c, nr), nt))
+            # (B) 中央の放出: 中央が素ホストなら複合でも同じ遷移
+            if bc is None and hc in hosts_plain and hc != 'W':
+                for bw in bws:
+                    nc = plus(hc, bw)
+                    if nc:
+                        cands.append(((l, nc, r), t))
+            # (C) 左レーンの通過済み
+            if bl is None and hl in hosts_plain and hl != 'W':
+                for bw in bws:
+                    nl = plus(hl, bw)
+                    if nl:
+                        cands.append(((nl, c, r), t))
+            for k, tt in cands:
+                before = n_add[0]
+                put(k, tt)
+                added += n_add[0] - before
+        n4 += added
+        if added == 0:
+            break
+    ordered = emit(rulemap, list(rulemap.keys()))
+    write_file(states, pre, post, ordered)
+    print(f'add_ab: states={len(states)} rules={len(ordered)} '
+          f'(+{n_add[0]}: asleep {n1}, mirror {n2}, thaw {n3}, clone {n4})')
+
+
 def add_collisions():
     # ②-B 衝突族: 対の担体(CB)横断と fast 波の壁反射帰り T3 が短い I_{i+1} 内で
     # 重なるとき、担体の 1 歩 TR 表示((CB,L,L)→TR)を優先する(帰り T3 は
@@ -1827,6 +2040,7 @@ if __name__ == '__main__':
     cmd = sys.argv[1] if len(sys.argv) > 1 else 'verify'
     {'gen': gen, 'discover': discover, 'verify': verify, 'add_a1': add_a1,
      'add_composite': add_composite, 'add_meeting': add_meeting,
+     'add_ab': add_ab,
      'verify_a1': verify_a1, 'discover_a1': discover_a1,
      'sweep_a1': sweep_a1,
      'sweep_a2': sweep_a2, 'verify_seg': verify_seg,

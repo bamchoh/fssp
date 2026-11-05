@@ -25,11 +25,13 @@ struct Config {
     soldier: usize,
     firing: usize,
     external: usize,
-    // 7 ビット/次元のインデックス (l<<14)+(c<<7)+r。状態数最大 128(凍結層の
-    // 複合状態(凍結変状態+横断信号、S33 位相 carrier)のために 32→64 状態の
-    // 5→6 ビット表現からさらに拡張。AVX2 gather パスは u16 索引のままなので
-    // 64 状態以下のルールセットに限って有効)。
-    rules: Box<[u8; 1 << 21]>,
+    // 8 ビット/次元のインデックス (l<<16)+(c<<8)+r(表 16 MB)。状態数最大 256
+    // (凍結層の複合状態(凍結変状態+横断信号、S33 位相 carrier、A3 の a/b
+    // 対の複合)のために 32→64→128 からさらに拡張。AVX2 gather パスは u16
+    // 索引のままなので 64 状態以下のルールセットに限って有効)。
+    rules: Box<[u8; 1 << 24]>,
+    // 規則が明示されている鍵のビット集合(診断用: 未定義鍵の FB 落ちを検出)
+    defined: Vec<u64>,
 }
 
 fn dump_full(cells: &[u8], config: &Config) {
@@ -101,7 +103,7 @@ fn calc_next(next_cells: &mut [u8], idx: usize, current: &[u8], config: &Config)
 }
 
 fn nextcell(left: u8, center: u8, right: u8, config: &Config) -> u8 {
-    config.rules[((left as usize) << 14) + ((center as usize) << 7) + (right as usize)]
+    config.rules[((left as usize) << 16) + ((center as usize) << 8) + (right as usize)]
 }
 
 fn nextline(cur: &mut [u8], nex: &mut [u8], config: &Config) {
@@ -213,8 +215,8 @@ mod simd {
         }
         // 端数はスカラーで
         while i < last {
-            nex[i] = rules[((cur[i - 1] as usize) << 14)
-                + ((cur[i] as usize) << 7)
+            nex[i] = rules[((cur[i - 1] as usize) << 16)
+                + ((cur[i] as usize) << 8)
                 + (cur[i + 1] as usize)];
             i += 1;
         }
@@ -286,7 +288,7 @@ fn parse_rules(line: &str, n: i32, states: &Vec<State>) -> (ParseState, usize, u
     for rule_state in vv {
         for (i, state) in states.iter().enumerate() {
             if rule_state == state.name.as_str() {
-                idx = (idx << 7) + i;
+                idx = (idx << 8) + i;
                 break;
             }
         }
@@ -311,7 +313,8 @@ fn parse_rule_file(s: &String) -> Config {
     let mut parse_state = ParseState::Begin;
     let mut config = Config {
         states: vec![],
-        rules: vec![0u8; 1 << 21].into_boxed_slice().try_into().unwrap(),
+        rules: vec![0u8; 1 << 24].into_boxed_slice().try_into().unwrap(),
+        defined: vec![0u64; (1 << 24) / 64],
         general: 0,
         soldier: 0,
         firing: 0,
@@ -330,6 +333,7 @@ fn parse_rule_file(s: &String) -> Config {
                 let (next_state, i, j) = parse_rules(&line, n, &config.states);
 
                 config.rules[i] = j as u8;
+                config.defined[i / 64] |= 1u64 << (i % 64);
 
                 next_state
             }
@@ -778,6 +782,9 @@ fn plan_a1_signals(analysis: &FaultAnalysis, config: &Config, a3: bool) -> (Vec<
     let fs = find_state_index(config, "FS");
     let ft = find_state_index(config, "FT");
     let ng = find_state_index(config, "NG");
+    // A3 ②-C: ルールファイルに会合状態 abX があれば解凍は a/b 会合機構
+    // (規則層+管路機械)で担うので、A3 モードの FT 注入を行わない。
+    let a3_ab = a3 && find_state_index(config, "abX").is_some();
 
     if fs.is_none() || ft.is_none() || ng.is_none() {
         notes.push(
@@ -830,27 +837,39 @@ fn plan_a1_signals(analysis: &FaultAnalysis, config: &Config, a3: bool) -> (Vec<
         let t_1i = t_i(i) + n_i - 1;
         let t_2i = t_1i + delta;
         let local_thaw = p == 1 && n_i >= 2;
+        let a3_local = a3_ab && !(i == 1 && n_i == 1);
         if let Some(ft) = ft {
             if n_i >= 2 {
                 notes.push(format!(
-                    "I{} frozen Δt={} (freeze via boundary reflection at t={}, FT at t={})",
+                    "I{} frozen Δt={} (freeze via boundary reflection at t={}, {} at t={})",
                     i,
                     delta,
                     t_1i,
+                    if a3_local { "a/b meeting abX (rule layer, no injection)" } else { "FT" },
                     t_2i - 1
                 ));
             } else {
-                notes.push(format!(
-                    "I{} frozen Δt={} (FS injected at t={}, FT at t={})",
-                    i,
-                    delta,
-                    if t_1i == 0 { 0 } else { t_1i - 1 },
-                    t_2i - 1
-                ));
+                notes.push(if a3_local {
+                    format!(
+                        "I{} frozen Δt={} (1-cell: CB shown on NG arrival at t={}, a/b meeting abX at t={})",
+                        i, delta, t_1i, t_2i - 1
+                    )
+                } else {
+                    format!(
+                        "I{} frozen Δt={} (FS injected at t={}, FT at t={})",
+                        i,
+                        delta,
+                        if t_1i == 0 { 0 } else { t_1i - 1 },
+                        t_2i - 1
+                    )
+                });
             }
             // n_i = 1 の縮退区間だけ FS を残す(C 波が存在しない: i=1 では t_1i =
             // 0 をクランプ、i>=2 では t_1i = t_i なので通常の 1 ステップ前)。
-            if n_i == 1 {
+            // A3 ②-C: i>=2 の 1 セル区間は起動 NG 到着時の表示が担体 CB
+            // ((NG,L,W)→CB、局所)なので FS も FT も注入しない。I1 が 1 セル
+            // (将軍自身が右端、t_11=0)だけは FS/FT 注入を残す(縮退)。
+            if n_i == 1 && !(a3_ab && i >= 2) {
                 if let Some(fs) = fs {
                     let fs_time = if t_1i == 0 { 0 } else { t_1i - 1 };
                     plan.push(PlannedSignal {
@@ -861,7 +880,7 @@ fn plan_a1_signals(analysis: &FaultAnalysis, config: &Config, a3: bool) -> (Vec<
                     });
                 }
             }
-            if !local_thaw {
+            if !local_thaw && !a3_local {
                 plan.push(PlannedSignal {
                     time: t_2i - 1,
                     cell: d.start,
@@ -970,6 +989,29 @@ struct FaultField {
     // (C,L,W)→FL の W スロットを壊す。
     own_wave: Vec<bool>,
     own_wave_nex: Vec<bool>,
+    // A3 ②-C: CB 入庫の 1 ステップ後に流す 2 便目(a 波 aF)。one-shot。
+    ab_hold: Vec<u8>,
+    ab_hold_nex: Vec<u8>,
+    // 管路口の 1 歩遅延線: 入口 to_right(b 前進の停留)、入口 to_left(a 帰還の停留)
+    r_buf: Vec<u8>,
+    r_buf_nex: Vec<u8>,
+    l_buf: Vec<u8>,
+    l_buf_nex: Vec<u8>,
+    // 会合済み入口(abX 提示後、後続の a 脚を呑む)
+    ab_consume: Vec<bool>,
+    ab_consume_nex: Vec<bool>,
+    // 帰還 carrier 族(bR で終わる状態名)、前進/帰還の射影(状態番号→成分)
+    br_carriers: Vec<u8>,
+    fw_proj: Vec<Option<u8>>,
+    bw_proj: Vec<Option<u8>>,
+    bf_state: Option<u8>,
+    af_state: Option<u8>,
+    abx_state: Option<u8>,
+    t3_state: Option<u8>,
+    br_state: Option<u8>,
+    wt3_state: Option<u8>,
+    wbr_state: Option<u8>,
+    trace_fb: bool,
 }
 
 impl FaultField {
@@ -1134,8 +1176,9 @@ impl FaultField {
                 //  抜ける: ②-B 衝突族)。
                 name == "T3"
                     || (name.len() == 3 && name.ends_with("T3"))
-                    || (name.len() == 6 && name.ends_with("T3")
-                        && name.chars().next().map_or(false, |c| c.is_lowercase()))
+                    || (name.len() >= 4
+                        && name.len() <= 6
+                        && name.ends_with("T3"))
             })
             .map(|(i, _)| i as u8)
             .collect();
@@ -1151,6 +1194,61 @@ impl FaultField {
             .map(|(i, _)| i as u8)
             .collect();
         let ng_state = find_state_index(config, "NG");
+        // b 前進/帰還 carrier(bF / bR)と会合提示(abX)。
+        // 帰還族は「bR で終わる 2〜6 文字の状態名」(純 bR + 複合 <X>bR 等)。
+        let bf_state = find_state_index(config, "bF");
+        let af_state = find_state_index(config, "aF");
+        let abx_state = find_state_index(config, "abX");
+        let t3_state = find_state_index(config, "T3");
+        let br_state = find_state_index(config, "bR");
+        let wt3_state = find_state_index(config, "WT3");
+        let wbr_state = find_state_index(config, "WbR");
+        let br_carriers: Vec<u8> = config
+            .states
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| {
+                let name = s.name.trim();
+                name.len() >= 2 && name.ends_with("bR") && name != "abX"
+            })
+            .map(|(i, _)| i as u8)
+            .collect();
+        // 状態名の射影(A3 ②-C): 前進成分(bF/aF/CB/TR/cBT とその複合の接頭部)、
+        // 帰還成分(T3/bR で終わる名前)。管路の口は「管に入る成分」だけを運ぶ。
+        let fw_proj: Vec<Option<u8>> = config
+            .states
+            .iter()
+            .map(|s| {
+                let name = s.name.trim();
+                let base = if name.ends_with("T3") || name.ends_with("bR") {
+                    &name[..name.len() - 2]
+                } else {
+                    name
+                };
+                match base {
+                    "bF" => bf_state,
+                    "aF" => af_state,
+                    "CB" => cb_state,
+                    "TR" => tr_state,
+                    "cBT" => cbt_state,
+                    _ => None,
+                }
+            })
+            .collect();
+        let bw_proj: Vec<Option<u8>> = config
+            .states
+            .iter()
+            .map(|s| {
+                let name = s.name.trim();
+                if name.ends_with("T3") {
+                    t3_state
+                } else if name.ends_with("bR") && name != "abX" {
+                    br_state
+                } else {
+                    None
+                }
+            })
+            .collect();
         // 信号層のアイドル値。R→L 管路(I_i 右端セルの右入力)は境界マーカー W
         // を提示する(www だと凍結起動と素の壁反射 (C,L,www)->M が区別できず衝突)。
         // 解凍信号 FT が口を通過した後は FT2(解凍後位相)に切り替わる。
@@ -1183,9 +1281,28 @@ impl FaultField {
             ng_state,
             ng_hold: vec![0u8; n + 2],
             ng_hold_nex: vec![0u8; n + 2],
+            ab_hold: vec![0u8; n + 2],
+            ab_hold_nex: vec![0u8; n + 2],
+            r_buf: vec![0u8; n + 2],
+            r_buf_nex: vec![0u8; n + 2],
+            l_buf: vec![0u8; n + 2],
+            l_buf_nex: vec![0u8; n + 2],
+            ab_consume: vec![false; n + 2],
+            ab_consume_nex: vec![false; n + 2],
             pipes,
             own_wave: vec![false; n + 2],
             own_wave_nex: vec![false; n + 2],
+            br_carriers,
+            fw_proj,
+            bw_proj,
+            bf_state,
+            af_state,
+            abx_state,
+            t3_state,
+            br_state,
+            wt3_state,
+            wbr_state,
+            trace_fb: std::env::var("FSSP_TRACE_FB").is_ok(),
             p,
             d1,
             a3,
@@ -1194,6 +1311,37 @@ impl FaultField {
         field.mask[0] = false;
         field.mask[n + 1] = false;
         field
+    }
+
+    // 1b) 会合判定(冪等: 判定後は l_buf が 0 なので再呼び出しは何もしない)。
+    //     ダンプの直前にも呼び、提示値 abX をダンプに反映する。
+    fn premerge(&mut self, current: &[u8]) {
+        let n = self.mask.len() - 2;
+        // 1b) A3 ②-C 会合: 管路入口に a 帰還(T3 族)が到着した(遅延線に入った)
+        //     ステップに、その上流(1 セル右)に b 帰還(bR 族)が続いていれば自対の
+        //     管路である(a は b の 1 歩前を走る。他の管路では間隔 >= 2)。
+        //     このとき停留せず提示値を会合状態 abX に置き換え、後続の b を呑む。
+        //     m>=2 の上流 = ストリーム、m=1 は対岸の正常セルの表示(複合 carrier)。
+        if self.a3 && self.signal_only && self.abx_state.is_some() {
+            for c in 1..=n {
+                if !self.mask[c] || c <= 1 || self.mask[c - 1] {
+                    continue; // 入口(左隣が正常)だけが提示先になる
+                }
+                if self.l_buf[c] == 0 || !self.t3_carriers.contains(&self.l_buf[c]) {
+                    continue;
+                }
+                let upstream_is_b = if self.mask[c + 1] {
+                    self.br_carriers.contains(&self.to_left[c + 1])
+                } else {
+                    self.br_carriers.contains(&current[c + 1])
+                };
+                if upstream_is_b {
+                    self.to_left[c] = self.abx_state.unwrap();
+                    self.l_buf[c] = 0;
+                    self.ab_consume[c] = true;
+                }
+            }
+        }
     }
 
     // 1 ステップ: cur の状態から全セルの t+1 状態を next_cells に計算してから
@@ -1224,6 +1372,8 @@ impl FaultField {
             }
         }
 
+        self.premerge(current);
+
         // 2) 全セルの次状態を計算(故障セルはシフト、正常セルはルール表)
         for c in 1..=n {
             if self.mask[c] {
@@ -1243,34 +1393,29 @@ impl FaultField {
                     let d = current[c - 1];
                     // 入口 pickup(②-B per-pipe 化): CB(I_i の凍結起動担体)と NG
                     // (会合放出 {X}NG)はどの管路の入口でも取り込む。
-                    //   - I_i の凍結担体 CB は自分の右隣の管路 D_i の入口にしか現れない
-                    //     ので複製の心配はない(D_i への入庫=R2 折り返しの源)。
-                    //   - NG 会合放出も自分の管路 D_i の入口にしか現れない。
                     //   - TR(fast 波=I1 担体の縦断)はどこでも取り込む(=縦断の継続)。
-                    //   - fast 波が D1 入口で CB のときは従来どおり(=始発)。
-                    // CB の入口 pickup: D1 の担体は「fast 波」(縦断/解凍波の始発)
-                    // なので常に通す。D_i (i>=2) の担体は対 (I_i,I_{i+1}) の R2 源
-                    // なんで対が配信可能なときだけ通す(配信不能な対では担体の
-                    // 1 歩 TR が fast 波の壁反射 T3 と衝突するため通さない)。
-                    // NG(会合放出)は放出が起きる=対が配信可能なときしか表示
-                    // されないが、同じゲートでよい。
+                    //   - A3 ②-C: 表示の前進成分(bF/aF、複合 bF⊕bw/aF⊕bw/CB⊕bw の
+                    //     前進部分)を射影して取り込む(管路は「管に入る信号」だけを運ぶ)。
                     // this_pair_deliverable には遠位口セルを渡す(m=1 のときは
-                    // 入口=遠位口)。入口セルを渡すと m_i が 0 になり全対が
-                    // 配信不可能判定になる(発見済みバグ)。
+                    // 入口=遠位口)。
                     let distal = self
                         .pipes
                         .iter()
                         .find(|&&(s, _)| s == c)
                         .map(|&(_, e)| e);
                     let cb_ok = self.is_pipe_entry(c)
-                        && (self.pipes.first().map_or(false, |&(s, _)| s == c)
+                        && (self.a3
+                            || self.pipes.first().map_or(false, |&(s, _)| s == c)
                             || distal
                                 .map_or(false, |e| self.this_pair_deliverable(e)));
+                    let f = if self.a3 { self.fw_proj[d as usize] } else { None };
                     if (Some(d) == self.cb_state && cb_ok)
                         || Some(d) == self.tr_state
                         || (self.ng_carriers.contains(&d) && cb_ok)
                     {
                         d
+                    } else if self.a3 && f.is_some() && (f != self.cb_state || cb_ok) {
+                        f.unwrap()
                     } else {
                         // アイドル充填: L→R 管路は L を提示する((www,M,L) との
                         // 誤発火回避、new_ctx の idle_to_right と同じ理屈)
@@ -1279,10 +1424,9 @@ impl FaultField {
                 } else {
                     current[c - 1]
                 };
+                let idle_r = if self.signal_only { config.soldier as u8 } else { config.external as u8 };
                 // own_wave: このセルが管路の入口なら、自身の機械の担体(CB)の
-                // 入庫を記録(sticky: 入来が担体なら true を保持し、fast 波(TR)
-                // や放出(NG)が入ったらクリア。担体 通過後に stream が素の
-                // choreography 値に戻っても折り返し(R2 装填)が起きるまで保持)。
+                // 入庫を記録(sticky)。
                 if self.is_pipe_entry(c) {
                     self.own_wave_nex[c] = if trv == self.cb_state.unwrap_or(255) {
                         true
@@ -1294,21 +1438,54 @@ impl FaultField {
                         self.own_wave[c]
                     };
                 }
-                // NG 起動中継の 2 歩提示: 遠位口(右隣が正常セル)で NG 系 carrier
-                // が到着したステップと次ステップの 2 歩、同じ値を提示する。
-                // 会合放出/注入のどちらの始発でも I2 左端の起動キー (NG,l,L)->M
-                // が t_i−1 で、続く誕生キー (NG,M,L)->複合 journey が t_i で
-                // 成立する(誕生キーは起動 M 表示の 2 歩目に左入力 LNG/NG を
-                // 見る必要がある。素の (L,M,L) は choreography の M 保値規則
-                // と衝突するので誕生キーに使えない)。
+                // NG 起動中継の 2 歩提示(②-B、A2 の対機械)。
                 if self.ng_hold[c] != 0 {
                     self.ng_hold_nex[c] = 0;
                     self.to_right_nex[c] = self.ng_hold[c];
+                    self.r_buf_nex[c] = 0;
+                    self.ab_hold_nex[c] = 0;
                 } else {
-                    // else 枝でも毎ステップ書く(swap が過去の保持値を _nex に
-                    // 残すので、書かないと 2 タイト毎の幽霊提示になる)
                     self.ng_hold_nex[c] = 0;
-                    self.to_right_nex[c] = trv;
+                    let a3_entry = self.a3 && self.signal_only && self.is_pipe_entry(c)
+                        && self.bf_state.is_some();
+                    if a3_entry {
+                        // A3 ②-C 入口機械:
+                        //   (i) CB 入庫 = 対 (a,b) の誕生。ストリームには a 波(aF、
+                        //       先発)を書き、次ステップに b 波(bF、1 歩後ろ)を書く
+                        //       (one-shot ab_hold)。b が前進停留で遅れ、a が帰還
+                        //       停留で遅れるので、間隔は常に >= 1(重ね合わせ無し)
+                        //       で、自対の管路入口でだけ「a 到着時に b が 1 歩後ろ」。
+                        //   (ii) 表示 bF の入庫(=他区間の b が横断してきた)は 1 歩
+                        //        遅延線で停留させる(論文: b は I_{i+1}..I_p の左端で
+                        //        1 歩停留。誕生管路 D_i では停留しない=局所判定)。
+                        //        後続の列(aF)も遅延線を通るので順序は保たれる。
+                        let bf = self.bf_state.unwrap();
+                        let (inc, born) = if self.ab_hold[c] != 0 {
+                            self.ab_hold_nex[c] = 0;
+                            (self.ab_hold[c], true)
+                        } else if Some(trv) == self.cb_state {
+                            // 誕生: a 波(aF)が先発、b 波(bF)が 1 歩後ろ
+                            self.ab_hold_nex[c] = bf;
+                            (self.af_state.unwrap_or(bf), true)
+                        } else {
+                            self.ab_hold_nex[c] = 0;
+                            (trv, false)
+                        };
+                        if self.r_buf[c] != 0 {
+                            self.to_right_nex[c] = self.r_buf[c];
+                            self.r_buf_nex[c] = if inc != idle_r { inc } else { 0 };
+                        } else if inc == bf && !born {
+                            self.to_right_nex[c] = idle_r;
+                            self.r_buf_nex[c] = bf;
+                        } else {
+                            self.to_right_nex[c] = inc;
+                            self.r_buf_nex[c] = 0;
+                        }
+                    } else {
+                        self.to_right_nex[c] = trv;
+                        self.r_buf_nex[c] = 0;
+                        self.ab_hold_nex[c] = 0;
+                    }
                     if self.intact(c + 1)
                         && self.is_ng_launch(trv)
                         && self.next_pair_deliverable(c)
@@ -1319,81 +1496,91 @@ impl FaultField {
                         && self.is_ng_launch(self.to_right[c])
                         && self.is_ng_launch(trv)
                     {
-                        // 配信可能でない対の機械(I_{p+1} 等)への会合放出: 会合セルが奇数 S で 2 歩
-                        // 表示すると管路に 2 便到着する。便は 1 便目(起動)
-                        // だけ提示し、2 便目を呑む(誕生キーが生じない)。
-                        self.to_right_nex[c] = if self.signal_only {
-                            config.soldier as u8
-                        } else {
-                            config.external as u8
-                        };
+                        // 配信可能でない対の機械への会合放出: 2 便目を呑む
+                        self.to_right_nex[c] = idle_r;
                     }
                 }
-                self.to_left_nex[c] = if self.signal_only && c > 1 && !self.mask[c - 1] {
-                    // 近位口(左隣が正常セル)。入来信号を提示に優先させる:
-                    // m >= 2 は右隣のストリーム中継、m == 1 は対岸の正常セルの
-                    // 表示からの遠位口 pickup(解凍信号 FT を運ぶ)。
-                    let inbound = if self.mask[c + 1] {
-                        self.to_left[c + 1]
+                // ── R→L ストリーム ──────────────────────────────────────
+                // 遠位口 pickup(対岸の正常セルの表示から取り込む)。
+                //   A3: 帰還成分(T3/bR、複合の帰還部分)を射影し、管路提示状態
+                //       WT3/WbR(境界マーカー W 付き)として運ぶ。
+                //   p=1(非 A3): FT 変換(解凍)と TR (R2 装填の源流)。
+                //   p>=2(非 A3): TR のみ、own_wave の管路だけ。
+                let distal_pick = |d_next: u8| -> Option<u8> {
+                    if self.a3 && self.signal_only {
+                        match self.bw_proj[d_next as usize] {
+                            Some(b) if Some(b) == self.t3_state => self.wt3_state,
+                            Some(b) if Some(b) == self.br_state => self.wbr_state,
+                            _ => None,
+                        }
                     } else {
-                        // m == 1: 対岸の正常セルの表示からの遠位口 pickup。
-                        //   p=1: FT 変換(解凍)と TR (R2 装填の源流) とも有効。
-                        //   p>=2(非 A3): TR (対の担体=CB の折り返し=R2 源流) のみ、
-                        //                自分の担体が入った管路(own_wave)だけで有効。
-                        //                fast 波(I1 担体)は縦断するだけなので折り返さない
-                        //                (各 I_i の凍結起動時刻の W スロットを壊すため)。
-                        //                残課題②で区間識別をつけて FT 変換 pickup も開放。
-                        //   A3: 会合機械の時刻系がずれるので有効にしない。
                         let allowed = if self.p == 1 {
                             self.d1.map_or(true, |(_, e)| c == e)
                         } else {
                             self.this_pair_deliverable(c)
                                 && self.own_wave_of_distal(c)
-                                && Some(current[c + 1]) == self.cbt_state
-                                && !self.a3
+                                && Some(d_next) == self.cbt_state
                         };
-                        match if allowed { self.pickup_thaw(current[c + 1]) } else { None } {
-                            Some(v) => v,
-                            None => config.external as u8,
-                        }
-                    };
-                    if inbound != config.external as u8 {
-                        inbound
+                        if allowed { self.pickup_thaw(d_next) } else { None }
+                    }
+                };
+                self.to_left_nex[c] = if self.signal_only && c > 1 && !self.mask[c - 1] {
+                    // 入口(左隣が正常セル)。入来信号を提示に優先させる。
+                    let mut inbound: Option<u8> = if self.mask[c + 1] {
+                        let v = self.to_left[c + 1];
+                        if v == config.external as u8 { None } else { Some(v) }
                     } else {
-                        // 左口(I_i 右端セルの右入力)。FT の提示ステップの直後に
-                        // アイドルを FT2(解凍後位相)へ切り替え、以後 FT2 を保つ。
-                        // FR2...FT が入来した後の FT2 粘着も同じロジックで効く。
-                        let cur = self.to_left[c];
-                        if (self.ft2_state.is_some() && Some(cur) == self.ft_state)
-                            || self.ft2_state == Some(cur)
-                        {
-                            self.ft2_state.unwrap()
-                        } else if w.is_some() {
-                            w.unwrap()
+                        distal_pick(current[c + 1])
+                    };
+                    if self.a3 && self.signal_only {
+                        let is_b = inbound.map_or(false, |v| self.br_carriers.contains(&v));
+                        // 会合済み入口: 後続の b 脚(bR 族)を呑む(消費)
+                        if self.ab_consume[c] {
+                            if is_b {
+                                inbound = None;
+                                self.ab_consume_nex[c] = true;
+                            } else {
+                                self.ab_consume_nex[c] = false;
+                            }
                         } else {
-                            config.external as u8
+                            self.ab_consume_nex[c] = false;
+                        }
+                        let is_a = inbound.map_or(false, |v| self.t3_carriers.contains(&v));
+                        // a 帰還の停留 = 入口の 1 歩遅延線(論文: a は帰還時に各
+                        // 故障区間の左端で 1 歩停留)。
+                        if self.l_buf[c] != 0 {
+                            let out = self.l_buf[c];
+                            self.l_buf_nex[c] = inbound.unwrap_or(0);
+                            inbound = Some(out);
+                        } else if is_a {
+                            self.l_buf_nex[c] = inbound.unwrap();
+                            inbound = None;
+                        } else {
+                            self.l_buf_nex[c] = 0;
+                        }
+                    }
+                    match inbound {
+                        Some(v) => v,
+                        None => {
+                            // 左口のアイドル。解凍信号(FT / 会合 abX)の提示ステップの
+                            // 直後にアイドルを FT2(解凍後位相)へ切り替え、以後保つ。
+                            let cur = self.to_left[c];
+                            if (self.ft2_state.is_some()
+                                && (Some(cur) == self.ft_state || Some(cur) == self.abx_state))
+                                || self.ft2_state == Some(cur)
+                            {
+                                self.ft2_state.unwrap()
+                            } else if w.is_some() {
+                                w.unwrap()
+                            } else {
+                                config.external as u8
+                            }
                         }
                     }
                 } else if self.mask[c + 1] {
                     self.to_left[c + 1]
                 } else if self.signal_only {
-                    // m >= 2 管路の遠位口 pickup(対岸の正常セルの表示から取り込む:
-                    // 左走行解凍信号 FT / T3 / 複合 <X>T3 は p=1 かつ D1 の口のとき
-                    // だけ。p>=2 では TR(対の担体=CB の折り返し=R2 装填の源流)のみ、
-                    // 自分の担体が入った管路(own_wave)の口で許す(fast 波=I1 担体は
-                    // 縦断するだけなので折り返さない。凍結起動の W スロット保護)。
-                    let allowed = if self.p == 1 {
-                        self.d1.map_or(true, |(_, e)| c == e)
-                    } else {
-                        self.this_pair_deliverable(c)
-                            && self.own_wave_of_distal(c)
-                            && Some(current[c + 1]) == self.cbt_state
-                            && !self.a3
-                    };
-                    match if allowed { self.pickup_thaw(current[c + 1]) } else { None } {
-                        Some(v) => v,
-                        None => config.external as u8,
-                    }
+                    distal_pick(current[c + 1]).unwrap_or(config.external as u8)
                 } else {
                     current[c + 1]
                 };
@@ -1416,7 +1603,19 @@ impl FaultField {
                 next_cells[c] = if self.frozen[c] {
                     current[c] // 凍結: 状態変化を止めて保持
                 } else {
-                    config.rules[((left as usize) << 14) + ((current[c] as usize) << 7) + (right as usize)]
+                    let v = config.rules[((left as usize) << 16) + ((current[c] as usize) << 8) + (right as usize)];
+                    // 診断: 未定義鍵(状態 0=FB への遷移)を環境変数 FSSP_TRACE_FB で表示
+                    let kidx = ((left as usize) << 16) + ((current[c] as usize) << 8) + (right as usize);
+                    if v == 0 && self.trace_fb && (config.defined[kidx / 64] >> (kidx % 64)) & 1 == 0 {
+                        eprintln!(
+                            "FB: cell{} ({}, {}, {})",
+                            c,
+                            config.states[left as usize].name.trim(),
+                            config.states[current[c] as usize].name.trim(),
+                            config.states[right as usize].name.trim()
+                        );
+                    }
+                    v
                 };
             }
         }
@@ -1430,6 +1629,10 @@ impl FaultField {
         std::mem::swap(&mut self.to_left, &mut self.to_left_nex);
         std::mem::swap(&mut self.ctrl, &mut self.ctrl_nex);
         std::mem::swap(&mut self.ng_hold, &mut self.ng_hold_nex);
+        std::mem::swap(&mut self.ab_hold, &mut self.ab_hold_nex);
+        std::mem::swap(&mut self.r_buf, &mut self.r_buf_nex);
+        std::mem::swap(&mut self.l_buf, &mut self.l_buf_nex);
+        std::mem::swap(&mut self.ab_consume, &mut self.ab_consume_nex);
         std::mem::swap(&mut self.own_wave, &mut self.own_wave_nex);
     }
 
@@ -1552,6 +1755,7 @@ fn simulate_fault(
                 current[n + 1] = state;
             }
         }
+        ff.premerge(&current[..]);
         if dump {
             // 計画信号の提示時刻の注記(どの信号がどの管路に乗ったかを
             // ダンプ上で追えるようにする。freeze_tools のパーサは
@@ -2046,15 +2250,15 @@ mod tests {
             st("S", ""),
             st("G", "general"),
         ];
-        let mut rules: Box<[u8; 1 << 21]> =
-            vec![0u8; 1 << 21].into_boxed_slice().try_into().unwrap();
+        let mut rules: Box<[u8; 1 << 24]> =
+            vec![0u8; 1 << 24].into_boxed_slice().try_into().unwrap();
         for l in 0u8..4 {
             for r in 0u8..4 {
                 // 中心 Q: 隣に S がいれば S になる(両方向 1/1 進行)、いなければ Q
-                rules[((l as usize) << 14) + (1 << 7) + (r as usize)] =
+                rules[((l as usize) << 16) + (1 << 8) + (r as usize)] =
                     if l == 2 || r == 2 { 2 } else { 1 };
                 // 中心 S: 発信して Q に戻る
-                rules[((l as usize) << 14) + (2 << 7) + (r as usize)] = 1;
+                rules[((l as usize) << 16) + (2 << 8) + (r as usize)] = 1;
             }
         }
         Config {
@@ -2064,6 +2268,7 @@ mod tests {
             firing: 3,
             external: 0,
             rules,
+            defined: vec![0u64; (1 << 24) / 64],
         }
     }
 
