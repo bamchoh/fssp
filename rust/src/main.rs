@@ -32,6 +32,19 @@ struct Config {
     rules: Vec<St>,
     // 規則が明示されている鍵のビット集合(診断用: 未定義鍵の FB 落ちを検出)
     defined: Vec<u64>,
+    // ── 純粋シフト線モード(--pure、(a) の模型)の規則表 ──
+    // 故障セルは生の状態を 1/1 で写すだけなので、判断は全て境界セル(左隣または
+    // 右隣が故障の正常セル)の規則で行う。境界セルの規則 f_B(l,c,r) は
+    //   l' = 左隣が故障なら PL(l) else l、r' = 右隣が故障なら PR(r) else r として
+    //   bmap[(flags,l',c,r')] があればそれ、無ければ rules[l'][c][r']
+    // (PL/PR は故障側の生の入力の射影=信号の分類)。
+    // 境界専用の状態を内部セルが入力に見るときは PJ で基底に射影する。
+    // 規則ファイルの行 `PL:a->b` `PR:a->b` `PJ:a->b` `B1:l##c##r->t`(左隣が故障)
+    // `B2:l##c##r->t`(右隣が故障)で与える。無ければ恒等。
+    pl: Vec<St>,
+    pr: Vec<St>,
+    pj: Vec<St>,
+    bmap: std::collections::HashMap<(u8, St, St, St), St>,
 }
 
 // セル状態の型と規則表の索引幅
@@ -246,11 +259,16 @@ fn parse_rule_file(s: &String) -> Config {
         soldier: 0,
         firing: 0,
         external: 0,
+        pl: vec![],
+        pr: vec![],
+        pj: vec![],
+        bmap: std::collections::HashMap::new(),
     };
 
     // 状態名 → 番号(規則行の各レーンを O(1) で引く。線形探索だと 300 万行で
     // 数秒かかる)。状態の宣言は規則より前に来るので、規則行に入る時点で作る。
     let mut name_idx: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut name_trim: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for line in s.lines() {
         parse_state = match parse_state {
             ParseState::Begin => parse_begin(&line),
@@ -267,12 +285,80 @@ fn parse_rule_file(s: &String) -> Config {
                         .enumerate()
                         .map(|(i, st)| (st.name.clone(), i))
                         .collect();
+                    name_trim = config
+                        .states
+                        .iter()
+                        .enumerate()
+                        .map(|(i, st)| (st.name.trim().to_string(), i))
+                        .collect();
+                    let ns = config.states.len();
+                    config.pl = (0..ns).map(|i| i as St).collect();
+                    config.pr = (0..ns).map(|i| i as St).collect();
+                    config.pj = (0..ns).map(|i| i as St).collect();
                 }
-                let (next_state, i, j) = parse_rules(&line, n, &name_idx);
-
-                config.rules[i] = j as St;
-                config.defined[i / 64] |= 1u64 << (i % 64);
-
+                let next_state = if n == 1 { ParseState::Begin } else { ParseState::FoundRule(n - 1) };
+                let lt = line.trim();
+                let (kind, rest) = if let Some(r) = lt.strip_prefix("PL:") {
+                    ('L', r)
+                } else if let Some(r) = lt.strip_prefix("PR:") {
+                    ('R', r)
+                } else if let Some(r) = lt.strip_prefix("PJ:") {
+                    ('J', r)
+                } else if let Some(r) = lt.strip_prefix("B1:") {
+                    ('1', r)
+                } else if let Some(r) = lt.strip_prefix("B2:") {
+                    ('2', r)
+                } else if let Some(r) = lt.strip_prefix("B0:") {
+                    ('0', r)
+                } else {
+                    ('-', lt)
+                };
+                match kind {
+                    'L' | 'R' | 'J' => {
+                        let (a, b) = rest.split_once("->").unwrap_or((rest, ""));
+                        if let (Some(&ia), Some(&ib)) = (name_trim.get(a.trim()), name_trim.get(b.trim())) {
+                            let v = match kind {
+                                'L' => &mut config.pl,
+                                'R' => &mut config.pr,
+                                _ => &mut config.pj,
+                            };
+                            v[ia] = ib as St;
+                        } else {
+                            eprintln!("rule file: unknown state in projection line: {}", lt);
+                        }
+                    }
+                    '1' | '2' | '0' => {
+                        let (lhs, rhs) = rest.split_once("->").unwrap_or((rest, ""));
+                        let names: Vec<&str> = lhs.split("##").map(|x| x.trim()).collect();
+                        let idx: Option<Vec<usize>> =
+                            names.iter().map(|x| name_trim.get(*x).copied()).collect();
+                        match (idx, name_trim.get(rhs.trim())) {
+                            (Some(v), Some(&t)) if v.len() == 3 => {
+                                let flags: u8 = match kind { '1' => 1, '2' => 2, _ => 0 };
+                                config.bmap.insert((flags, v[0] as St, v[1] as St, v[2] as St), t as St);
+                            }
+                            _ => eprintln!("rule file: bad boundary rule line: {}", lt),
+                        }
+                    }
+                    _ => {
+                        // 拡張状態(索引 >= 2^BITS、純粋シフト線モードの境界専用状態)を
+                        // 含む通常行は密な表に入らないので疎な表(フラグ不問)へ回す。
+                        let (lhs, rhs) = lt.split_once("->").unwrap_or((lt, ""));
+                        let names: Vec<&str> = lhs.split("##").map(|x| x.trim()).collect();
+                        let idx: Option<Vec<usize>> =
+                            names.iter().map(|x| name_trim.get(*x).copied()).collect();
+                        let big = idx.as_ref().map_or(false, |v| v.iter().any(|&i| i >= (1 << BITS)));
+                        if big {
+                            if let (Some(v), Some(&t)) = (idx, name_trim.get(rhs.trim())) {
+                                config.bmap.insert((0, v[0] as St, v[1] as St, v[2] as St), t as St);
+                            }
+                        } else {
+                            let (_, i, j) = parse_rules(&line, n, &name_idx);
+                            config.rules[i] = j as St;
+                            config.defined[i / 64] |= 1u64 << (i % 64);
+                        }
+                    }
+                }
                 next_state
             }
         };
@@ -978,6 +1064,9 @@ struct FaultField {
     afo_state: Option<St>,
     own_pres: Vec<bool>,
     own_pres_nex: Vec<bool>,
+    // (a) 純粋シフト線モード: 故障セルは生の状態を写すだけ。境界セルは Config の
+    // 境界表(bmap)と射影(PL/PR)で規則を引く。他の故障区間処理は全て無効。
+    pure: bool,
     // ②-E: 凍結 1/3 信号 の位相集合(複合 ⊕bw 込み)。 D_i 左端の会合判定に使う。
     j_s33_frozen: Vec<St>,
     j_s3a_frozen: Vec<St>,
@@ -1153,7 +1242,7 @@ impl FaultField {
     }
 
     fn new(mask: &[bool], config: &Config, signal_only: bool) -> FaultField {
-        Self::new_ctx(mask, config, signal_only, 0, None, Vec::new(), false)
+        Self::new_ctx(mask, config, signal_only, 0, None, Vec::new(), false, false)
     }
 
     fn new_ctx(
@@ -1164,6 +1253,7 @@ impl FaultField {
         d1: Option<(usize, usize)>,
         pipes: Vec<(usize, usize)>,
         a3: bool,
+        pure: bool,
     ) -> FaultField {
         let n = mask.len() - 2;
         let w_state = find_state_index(config, "W");
@@ -1324,6 +1414,8 @@ impl FaultField {
         // 細胞 1 と区別できる L を提示する((L,M,r) ミラー規則を生成する)。
         let idle_to_right = if signal_only { config.soldier as St } else { config.external as St };
         let idle_to_left = if signal_only { w_state.unwrap_or(config.external as St) } else { config.soldier as St };
+        // 純粋シフト線の初期内容は静止状態 L(右端の右入力は PR(L)=W、左端の左入力は PL(L)=L)
+        let idle_to_left = if pure { config.soldier as St } else { idle_to_left };
         let mut field = FaultField {
             mask: mask.to_vec(),
             to_right: vec![idle_to_right; n + 2],
@@ -1372,6 +1464,7 @@ impl FaultField {
             afo_state,
             own_pres: vec![false; n + 2],
             own_pres_nex: vec![false; n + 2],
+            pure,
             j_s33_frozen,
             j_s3a_frozen,
             pipe_virgin: vec![true; n + 2],
@@ -1423,6 +1516,101 @@ impl FaultField {
         }
     }
 
+    // (a) 純粋シフト線モードの 1 セル分。
+    //   故障セル: to_right ← 左隣の生の状態(左隣が故障ならその to_right)、
+    //             to_left ← 右隣の生の状態(右隣が故障ならその to_left)。判断なし。
+    //   正常セル: 左入力 = 左隣が故障なら to_right[c-1](生)、そうでなければ
+    //             PJ(左隣の状態)。右入力も同様。境界セル(どちらかの隣が故障)は
+    //             bmap[(flags,l,c,r)] → 無ければ rules[PL(l)][c][PR(r)]。
+    fn pure_step(&mut self, c: usize, current: &[St], next_cells: &mut [St], config: &Config) {
+        if self.mask[c] {
+            self.to_right_nex[c] = if self.mask[c - 1] { self.to_right[c - 1] } else { current[c - 1] };
+            self.to_left_nex[c] = if self.mask[c + 1] { self.to_left[c + 1] } else { current[c + 1] };
+            next_cells[c] = current[c];
+            return;
+        }
+        let fl = self.mask[c - 1];
+        let fr = self.mask[c + 1];
+        let l = if fl { self.to_right[c - 1] } else { config.pj[current[c - 1] as usize] };
+        let r = if fr { self.to_left[c + 1] } else { config.pj[current[c + 1] as usize] };
+        let cur = current[c];
+        let flags: u8 = (fl as u8) | ((fr as u8) << 1);
+        let v = if flags != 0 {
+            // 境界表は射影後の入力で引く(生の入力の区別は PL/PR が別の信号状態に
+            // 写すことで表す: 例 LNG→NG、LNG2→NG2)。無ければ密な表。
+            let l2 = if fl { config.pl[l as usize] } else { l };
+            let r2 = if fr { config.pr[r as usize] } else { r };
+            if let Some(&t) = config.bmap.get(&(flags, l2, cur, r2)) {
+                t
+            } else if let Some(&t) = config.bmap.get(&(0, l2, cur, r2)) {
+                t
+            } else if (l2 as usize) >= (1 << BITS) || (cur as usize) >= (1 << BITS) || (r2 as usize) >= (1 << BITS) {
+                // 拡張状態を含む鍵は疎な表にしか無い: 未定義
+                if self.trace_fb {
+                    eprintln!(
+                        "FB(pure B{} ext): cell{} raw ({}, {}, {}) -> proj ({}, {}, {})",
+                        flags,
+                        c,
+                        config.states[l as usize].name.trim(),
+                        config.states[cur as usize].name.trim(),
+                        config.states[r as usize].name.trim(),
+                        config.states[l2 as usize].name.trim(),
+                        config.states[cur as usize].name.trim(),
+                        config.states[r2 as usize].name.trim()
+                    );
+                }
+                0
+            } else {
+                let kidx = ((l2 as usize) << (2 * BITS)) + ((cur as usize) << BITS) + (r2 as usize);
+                let v = config.rules[kidx];
+                if v == 0 && self.trace_fb && (config.defined[kidx / 64] >> (kidx % 64)) & 1 == 0 {
+                    eprintln!(
+                        "FB(pure B{}): cell{} raw ({}, {}, {}) -> proj ({}, {}, {})",
+                        flags,
+                        c,
+                        config.states[l as usize].name.trim(),
+                        config.states[cur as usize].name.trim(),
+                        config.states[r as usize].name.trim(),
+                        config.states[l2 as usize].name.trim(),
+                        config.states[cur as usize].name.trim(),
+                        config.states[r2 as usize].name.trim()
+                    );
+                }
+                v
+            }
+        } else if (l as usize) >= (1 << BITS) || (cur as usize) >= (1 << BITS) || (r as usize) >= (1 << BITS) {
+            match config.bmap.get(&(0, l, cur, r)) {
+                Some(&t) => t,
+                None => {
+                    if self.trace_fb {
+                        eprintln!(
+                            "FB(pure ext): cell{} ({}, {}, {})",
+                            c,
+                            config.states[l as usize].name.trim(),
+                            config.states[cur as usize].name.trim(),
+                            config.states[r as usize].name.trim()
+                        );
+                    }
+                    0
+                }
+            }
+        } else {
+            let kidx = ((l as usize) << (2 * BITS)) + ((cur as usize) << BITS) + (r as usize);
+            let v = config.rules[kidx];
+            if v == 0 && self.trace_fb && (config.defined[kidx / 64] >> (kidx % 64)) & 1 == 0 {
+                eprintln!(
+                    "FB(pure): cell{} ({}, {}, {})",
+                    c,
+                    config.states[l as usize].name.trim(),
+                    config.states[cur as usize].name.trim(),
+                    config.states[r as usize].name.trim()
+                );
+            }
+            v
+        };
+        next_cells[c] = v;
+    }
+
     // 1 ステップ: cur の状態から全セルの t+1 状態を next_cells に計算してから
     // ストリーム/制御チャネルを進める(更新順序に結果が依存しない)。
     fn fault_step(&mut self, current: &mut [St], next_cells: &mut [St], config: &Config) {
@@ -1451,10 +1639,16 @@ impl FaultField {
             }
         }
 
-        self.premerge(current);
+        if !self.pure {
+            self.premerge(current);
+        }
 
         // 2) 全セルの次状態を計算(故障セルはシフト、正常セルはルール表)
         for c in 1..=n {
+            if self.pure {
+                self.pure_step(c, current, next_cells, config);
+                continue;
+            }
             if self.mask[c] {
                 // 故障セル: 左に由来する値を保ったまま右へ渡す準備をする。
                 // 左隣の値は、左隣が故障ならその L→R ストリーム、正常ならそのセルの
@@ -2061,7 +2255,7 @@ const USAGE: &str = "usage: fssp -r <rulefile> [-s size] [-f faults] [--a3] [--i
 // の表の確保が毎回かかる)。出力形式:
 //   batch: n=<n> f=<spec> a3=<0|1> <SYNCED|NOT SYNCED> t=<t> injected=<k>
 // 配置の条件(n_i >= m_i 等)の検査は呼び出し側(freeze_tools.py)が行う。
-fn batch_run_layout(config: &Config, n: usize, spec: &str, a3: bool) -> Result<(bool, usize, usize), String> {
+fn batch_run_layout(config: &Config, n: usize, spec: &str, a3: bool, pure: bool) -> Result<(bool, usize, usize), String> {
     let fault = parse_fault_spec(spec, n)?;
     let analysis = analyze_faults(&fault, n);
     let mask = analysis.mask.clone();
@@ -2073,7 +2267,7 @@ fn batch_run_layout(config: &Config, n: usize, spec: &str, a3: bool) -> Result<(
         .map(|s| (s.start, s.end))
         .collect();
     let p_cnt = pipes.len();
-    let mut ff = FaultField::new_ctx(&mask, config, true, p_cnt, d1, pipes, a3);
+    let mut ff = FaultField::new_ctx(&mask, config, true, p_cnt, d1, pipes, a3, pure);
     let (signals, _notes) = plan_a1_signals(&analysis, config, a3);
     let cap = if a3 { (n << 1) - 2 + p_cnt } else { (n << 1) - 2 };
     let mut current = first_line(n, config);
@@ -2093,7 +2287,7 @@ fn batch_run_layout(config: &Config, n: usize, spec: &str, a3: bool) -> Result<(
     Ok((fired_intact(&current, &mask, config.firing), t, signals.len()))
 }
 
-fn run_batch(config: &Config, path: &str) {
+fn run_batch(config: &Config, path: &str, pure: bool) {
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
         Err(e) => {
@@ -2122,7 +2316,7 @@ fn run_batch(config: &Config, path: &str) {
         };
         let spec = parts[1];
         let a3 = parts.get(2).map_or(false, |v| *v == "a3" || *v == "--a3" || *v == "1");
-        match batch_run_layout(config, n, spec, a3) {
+        match batch_run_layout(config, n, spec, a3, pure) {
             Ok((synced, t, injected)) => {
                 println!(
                     "batch: n={} f={} a3={} {} t={} injected={}",
@@ -2165,6 +2359,7 @@ fn main() {
     let mut color_mode = false;
     let mut strict_mode = false;
     let mut a3_mode = false;
+    let mut pure_mode = false;
     let mut size_arg: Option<usize> = None;
     let mut rule_arg: Option<String> = None;
     let mut fault_arg: Option<String> = None;
@@ -2194,6 +2389,8 @@ fn main() {
 ",
         "                        -f 実行し `batch: n=.. f=.. a3=.. SYNCED t=.. injected=..` を出す
 ",
+        "  --pure                故障セルを純粋シフト線にする((a) の模型、A3 専用)
+",
         "  --strict              n_i>=m_i (A1/A2 条件) を満たす配置以外は実行しない\n",
         "  -d, --dump            1 ステップごとの途中経過を出力(ruby -d と同書式)\n",
         "                        (-f/--inject 時は R:/L:/F: 凍結行も追加)\n",
@@ -2218,6 +2415,7 @@ fn main() {
             }
             "--strict" => strict_mode = true,
             "--a3" => a3_mode = true,
+            "--pure" => pure_mode = true,
             "-r" | "--rule" | "-s" | "--size" | "-f" | "--fault" | "--inject" | "--wallset" | "-t" | "--steps" | "--batch" => {
                 i += 1;
                 let value = match args.get(i) {
@@ -2350,7 +2548,7 @@ fn main() {
     }
 
     if let Some(path) = batch_arg.as_ref() {
-        run_batch(&config, path);
+        run_batch(&config, path, pure_mode);
         std::process::exit(0);
     }
 
@@ -2442,7 +2640,11 @@ fn main() {
             d1,
             pipes.clone(),
             a3_mode,
+            pure_mode,
         );
+        if pure_mode && !a3_mode {
+            eprintln!("warning: --pure is designed for --a3 (A1/A2 injections are not supported in pure mode)");
+        }
 
         // A1/A2 の信号スケジュールを区間構造から組み立てる
         let signals: Vec<PlannedSignal> = match &analysis {
