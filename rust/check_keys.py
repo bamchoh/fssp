@@ -10,7 +10,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 ROOT = os.path.dirname(HERE)
 BIN = os.path.join(HERE, 'target', 'release', 'fssp.exe')
-OUT_RULE = os.path.join(ROOT, 'balzer-freeze.rul.txt')
+# 実行用の完全規則表(freeze_tools.add_ab の出力)で照合する
+OUT_RULE = os.path.join(ROOT, 'balzer-freeze-full.rul.txt')
 
 from freeze_tools import load, parse_rules, state_name, state_rows, stream_rows, cells, srow_cells  # noqa: E402
 

@@ -25,16 +25,21 @@ struct Config {
     soldier: usize,
     firing: usize,
     external: usize,
-    // 8 ビット/次元のインデックス (l<<16)+(c<<8)+r(表 16 MB)。状態数最大 256
-    // (凍結層の複合状態(凍結変状態+横断信号、S33 位相 carrier、A3 の a/b
-    // 対の複合)のために 32→64→128 からさらに拡張。AVX2 gather パスは u16
-    // 索引のままなので 64 状態以下のルールセットに限って有効)。
-    rules: Box<[u8; 1 << 24]>,
+    // 9 ビット/次元のインデックス (l<<18)+(c<<9)+r(表 2^27 要素 × u16 = 256 MB、
+    // 遅延ゼロ初期化なので触れたページだけ常駐)。状態数最大 512(凍結層の複合
+    // 状態のために 32→64→128→256 から拡張。セル状態は u16 = St)。表は末尾に
+    // 2 要素の余白を持つ(AVX2 gather の 4 バイト読み出し用)。
+    rules: Vec<St>,
     // 規則が明示されている鍵のビット集合(診断用: 未定義鍵の FB 落ちを検出)
     defined: Vec<u64>,
 }
 
-fn dump_full(cells: &[u8], config: &Config) {
+// セル状態の型と規則表の索引幅
+type St = u16;
+const BITS: usize = 9;
+const TBL: usize = 1 << (3 * BITS);
+
+fn dump_full(cells: &[St], config: &Config) {
     print!("|");
     for i in 0..cells.len() {
         print!("{0: <4}|", config.states[cells[i] as usize].name);
@@ -50,7 +55,7 @@ fn color_code(color: &String) -> String {
     format!("{};{};{}", r, g, b)
 }
 
-fn dumpln(cells: &[u8], config: &Config) {
+fn dumpln(cells: &[St], config: &Config) {
     print!("|");
     for i in 1..cells.len() - 1 {
         print!(
@@ -63,7 +68,7 @@ fn dumpln(cells: &[u8], config: &Config) {
     println!();
 }
 
-fn dump(cells: &[u8], config: &Config) {
+fn dump(cells: &[St], config: &Config) {
     print!("|");
     for i in 1..cells.len() {
         print!(
@@ -75,7 +80,7 @@ fn dump(cells: &[u8], config: &Config) {
     }
 }
 
-fn dumpright(cells: &[u8], config: &Config) {
+fn dumpright(cells: &[St], config: &Config) {
     for i in 0..cells.len() - 1 {
         print!(
             "\x1b[38;2;{1}m\x1b[48;2;{2}m{0: <4}\x1b[0m|",
@@ -94,7 +99,7 @@ enum ParseState {
     FoundRule(i32),
 }
 
-fn calc_next(next_cells: &mut [u8], idx: usize, current: &[u8], config: &Config) {
+fn calc_next(next_cells: &mut [St], idx: usize, current: &[St], config: &Config) {
     let mut i = idx;
     for cells in current.windows(3) {
         next_cells[i] = nextcell(cells[0], cells[1], cells[2], config);
@@ -102,121 +107,54 @@ fn calc_next(next_cells: &mut [u8], idx: usize, current: &[u8], config: &Config)
     }
 }
 
-fn nextcell(left: u8, center: u8, right: u8, config: &Config) -> u8 {
-    config.rules[((left as usize) << 16) + ((center as usize) << 8) + (right as usize)]
+fn nextcell(left: St, center: St, right: St, config: &Config) -> St {
+    config.rules[((left as usize) << (2 * BITS)) + ((center as usize) << BITS) + (right as usize)]
 }
 
-fn nextline(cur: &mut [u8], nex: &mut [u8], config: &Config) {
+fn nextline(cur: &mut [St], nex: &mut [St], config: &Config) {
     calc_next(nex, 1, cur, config);
 }
 
-// AVX2 gather パス。u8 表(64 状態以下のルールセットのみ。索引を u16 に圧縮した
-// gathered dword の下位 1 バイトを状態として回収する。
+// AVX2 gather パス(u16 セル、9 ビット/次元の索引)。8 セルずつ u32 に拡張して
+// 索引 (l<<18)+(c<<9)+r を作り、u16 表を scale=2 で gather した dword の下位
+// 16 ビットを状態として回収する(表は末尾に 2 要素の余白を持つ)。
 #[cfg(target_arch = "x86_64")]
 mod simd {
+    use super::{St, BITS};
     use std::arch::x86_64::*;
 
     #[target_feature(enable = "avx2")]
-    pub unsafe fn step(cur: &[u8], nex: &mut [u8], rules: &[u8]) {
+    pub unsafe fn step(cur: &[St], nex: &mut [St], rules: &[St]) {
         let len = cur.len();
-        let zp = _mm256_setzero_si256();
-        // half 内: 各 gathered dword の下位バイト(byte 0,4,8,12)を先頭 4 レーンに
-        let smask = _mm256_setr_epi8(
-            0, 4, 8, 12, 0, 4, 8, 12, 0, 4, 8, 12, 0, 4, 8, 12, //
-            0, 4, 8, 12, 0, 4, 8, 12, 0, 4, 8, 12, 0, 4, 8, 12,
-        );
-        // half 内 0..3 のみ通し、4..15 をゼロ化
-        let amask = _mm256_setr_epi8(
-            -1, -1, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, //
-            -1, -1, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        );
-
+        let mask16 = _mm256_set1_epi32(0xFFFF);
         let mut i = 1usize;
         let last = len - 1; // 中心セルの排他上限
-        while i + 32 <= last {
+        while i + 8 <= last {
             let base = cur.as_ptr().add(i - 1);
-            let l = _mm256_loadu_si256(base as *const __m256i);
-            let c = _mm256_loadu_si256(base.add(1) as *const __m256i);
-            let r = _mm256_loadu_si256(base.add(2) as *const __m256i);
-
-            // u8 → u16 拡張
-            //   unpacklo: [c0..c7 | c16..c23]、unpackhi: [c8..c15 | c24..c31]
-            let llo = _mm256_unpacklo_epi8(l, zp);
-            let lhi = _mm256_unpackhi_epi8(l, zp);
-            let clo = _mm256_unpacklo_epi8(c, zp);
-            let chi = _mm256_unpackhi_epi8(c, zp);
-            let rlo = _mm256_unpacklo_epi8(r, zp);
-            let rhi = _mm256_unpackhi_epi8(r, zp);
-
-            // idx16 = (l<<12) + (c<<6) + r
-            let ilo = _mm256_add_epi16(
-                _mm256_add_epi16(_mm256_slli_epi16(llo, 12), _mm256_slli_epi16(clo, 6)),
-                rlo,
+            let l = _mm256_cvtepu16_epi32(_mm_loadu_si128(base as *const __m128i));
+            let c = _mm256_cvtepu16_epi32(_mm_loadu_si128(base.add(1) as *const __m128i));
+            let r = _mm256_cvtepu16_epi32(_mm_loadu_si128(base.add(2) as *const __m128i));
+            let idx = _mm256_or_si256(
+                _mm256_or_si256(
+                    _mm256_slli_epi32(l, (2 * BITS) as i32),
+                    _mm256_slli_epi32(c, BITS as i32),
+                ),
+                r,
             );
-            let ihi = _mm256_add_epi16(
-                _mm256_add_epi16(_mm256_slli_epi16(lhi, 12), _mm256_slli_epi16(chi, 6)),
-                rhi,
+            let g = _mm256_and_si256(
+                _mm256_i32gather_epi32(rules.as_ptr() as *const i32, idx, 2),
+                mask16,
             );
-
-            // u16 → u32 拡張して gathers
-            // ga: c0..c7 / gb: c8..c15 / gc: c16..c23 / gd: c24..c31
-            let ga = _mm256_i32gather_epi32(
-                rules.as_ptr() as *const i32,
-                _mm256_cvtepu16_epi32(_mm256_castsi256_si128(ilo)),
-                1,
-            );
-            let gb = _mm256_i32gather_epi32(
-                rules.as_ptr() as *const i32,
-                _mm256_cvtepu16_epi32(_mm256_castsi256_si128(ihi)),
-                1,
-            );
-            let gc = _mm256_i32gather_epi32(
-                rules.as_ptr() as *const i32,
-                _mm256_cvtepu16_epi32(_mm256_extracti128_si256::<1>(ilo)),
-                1,
-            );
-            let gd = _mm256_i32gather_epi32(
-                rules.as_ptr() as *const i32,
-                _mm256_cvtepu16_epi32(_mm256_extracti128_si256::<1>(ihi)),
-                1,
-            );
-
-            // dword 下位バイト回収:
-            //   sa: [c0-3 | c4-7]  sb: [c8-11 | c12-15]
-            //   sc: [c16-19 | c20-23]  sd: [c24-27 | c28-31]
-            let sa = _mm256_and_si256(_mm256_shuffle_epi8(ga, smask), amask);
-            let sb = _mm256_and_si256(_mm256_shuffle_epi8(gb, smask), amask);
-            let sc = _mm256_and_si256(_mm256_shuffle_epi8(gc, smask), amask);
-            let sd = _mm256_and_si256(_mm256_shuffle_epi8(gd, smask), amask);
-
-            // half 内先頭 4 バイトをずらしながら OR 合成
-            //   out(half0) = [c0..c15]、out(half1) = [c16..c31]
-            let sa0 = _mm256_castsi256_si128(sa);
-            let sa1 = _mm256_extracti128_si256::<1>(sa);
-            let sb0 = _mm256_castsi256_si128(sb);
-            let sb1 = _mm256_extracti128_si256::<1>(sb);
-            let sc0 = _mm256_castsi256_si128(sc);
-            let sc1 = _mm256_extracti128_si256::<1>(sc);
-            let sd0 = _mm256_castsi256_si128(sd);
-            let sd1 = _mm256_extracti128_si256::<1>(sd);
-
-            let outlo = _mm_or_si128(
-                _mm_or_si128(sa0, _mm_bslli_si128::<4>(sa1)),
-                _mm_or_si128(_mm_bslli_si128::<8>(sb0), _mm_bslli_si128::<12>(sb1)),
-            );
-            let outhi = _mm_or_si128(
-                _mm_or_si128(sc0, _mm_bslli_si128::<4>(sc1)),
-                _mm_or_si128(_mm_bslli_si128::<8>(sd0), _mm_bslli_si128::<12>(sd1)),
-            );
-            let out = _mm256_set_m128i(outhi, outlo);
-
-            _mm256_storeu_si256(nex.as_mut_ptr().add(i) as *mut __m256i, out);
-            i += 32;
+            // 8 x u32 → 8 x u16(packus は 128 ビットレーン内で畳むので並べ直す)
+            let p = _mm256_packus_epi32(g, g);
+            let p = _mm256_permute4x64_epi64(p, 0b00_00_10_00);
+            _mm_storeu_si128(nex.as_mut_ptr().add(i) as *mut __m128i, _mm256_castsi256_si128(p));
+            i += 8;
         }
         // 端数はスカラーで
         while i < last {
-            nex[i] = rules[((cur[i - 1] as usize) << 16)
-                + ((cur[i] as usize) << 8)
+            nex[i] = rules[((cur[i - 1] as usize) << (2 * BITS))
+                + ((cur[i] as usize) << BITS)
                 + (cur[i + 1] as usize)];
             i += 1;
         }
@@ -226,7 +164,7 @@ mod simd {
 fn nextline_par(ary_pair: &mut AryPair, config: &Config, use_avx2: bool) {
     #[cfg(target_arch = "x86_64")]
     {
-        if use_avx2 && config.states.len() <= 64 {
+        if use_avx2 {
             unsafe { simd::step(ary_pair.cur, ary_pair.nex, &config.rules[..]) };
             return;
         }
@@ -235,7 +173,7 @@ fn nextline_par(ary_pair: &mut AryPair, config: &Config, use_avx2: bool) {
     calc_next(ary_pair.nex, 1, ary_pair.cur, config);
 }
 
-fn per_nextline(current: &[u8], next_cells: &mut [u8], config: &Config) {
+fn per_nextline(current: &[St], next_cells: &mut [St], config: &Config) {
     let mid_point = current.len() / 2;
     let (first, second) = next_cells.split_at_mut(mid_point);
     rayon::join(
@@ -278,29 +216,18 @@ fn parse_states(line: &str, n: i32) -> (ParseState, State) {
     }
 }
 
-fn parse_rules(line: &str, n: i32, states: &Vec<State>) -> (ParseState, usize, usize) {
-    let v: Vec<&str> = line.split("->").collect();
-
-    let vv: Vec<&str> = v[0].split("##").collect();
-
+fn parse_rules(
+    line: &str,
+    n: i32,
+    name_idx: &std::collections::HashMap<String, usize>,
+) -> (ParseState, usize, usize) {
+    let (lhs, rhs) = line.split_once("->").unwrap_or((line, ""));
     let mut idx: usize = 0;
-
-    for rule_state in vv {
-        for (i, state) in states.iter().enumerate() {
-            if rule_state == state.name.as_str() {
-                idx = (idx << 8) + i;
-                break;
-            }
-        }
+    for rule_state in lhs.split("##") {
+        let i = *name_idx.get(rule_state).unwrap_or(&0);
+        idx = (idx << BITS) + i;
     }
-
-    let mut n_idx: usize = 0;
-    for (i, state) in states.iter().enumerate() {
-        if v[1] == state.name.as_str() {
-            n_idx = i;
-            break;
-        }
-    }
+    let n_idx = *name_idx.get(rhs).unwrap_or(&0);
 
     if n == 1 {
         (ParseState::Begin, idx, n_idx)
@@ -313,14 +240,17 @@ fn parse_rule_file(s: &String) -> Config {
     let mut parse_state = ParseState::Begin;
     let mut config = Config {
         states: vec![],
-        rules: vec![0u8; 1 << 24].into_boxed_slice().try_into().unwrap(),
-        defined: vec![0u64; (1 << 24) / 64],
+        rules: vec![0 as St; TBL + 2],
+        defined: vec![0u64; TBL / 64],
         general: 0,
         soldier: 0,
         firing: 0,
         external: 0,
     };
 
+    // 状態名 → 番号(規則行の各レーンを O(1) で引く。線形探索だと 300 万行で
+    // 数秒かかる)。状態の宣言は規則より前に来るので、規則行に入る時点で作る。
+    let mut name_idx: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for line in s.lines() {
         parse_state = match parse_state {
             ParseState::Begin => parse_begin(&line),
@@ -330,9 +260,17 @@ fn parse_rule_file(s: &String) -> Config {
                 next_state
             }
             ParseState::FoundRule(n) => {
-                let (next_state, i, j) = parse_rules(&line, n, &config.states);
+                if name_idx.len() != config.states.len() {
+                    name_idx = config
+                        .states
+                        .iter()
+                        .enumerate()
+                        .map(|(i, st)| (st.name.clone(), i))
+                        .collect();
+                }
+                let (next_state, i, j) = parse_rules(&line, n, &name_idx);
 
-                config.rules[i] = j as u8;
+                config.rules[i] = j as St;
                 config.defined[i / 64] |= 1u64 << (i % 64);
 
                 next_state
@@ -356,7 +294,7 @@ fn read_file(path: String) -> Result<String, String> {
     Ok(file_content)
 }
 
-fn fired(cells: &[u8], firing: usize) -> bool {
+fn fired(cells: &[St], firing: usize) -> bool {
     for i in 1..cells.len() - 1 {
         if cells[i] as usize != firing {
             return false;
@@ -365,22 +303,22 @@ fn fired(cells: &[u8], firing: usize) -> bool {
     true
 }
 
-fn new_line(n: usize, config: &Config) -> Vec<u8> {
-    let mut cells: Vec<u8> = vec![config.soldier as u8; n + 2];
-    cells[0] = config.external as u8;
-    cells[n + 1] = config.external as u8;
+fn new_line(n: usize, config: &Config) -> Vec<St> {
+    let mut cells: Vec<St> = vec![config.soldier as St; n + 2];
+    cells[0] = config.external as St;
+    cells[n + 1] = config.external as St;
     cells
 }
 
-fn first_line(n: usize, config: &Config) -> Vec<u8> {
+fn first_line(n: usize, config: &Config) -> Vec<St> {
     let mut cells = new_line(n, config);
-    cells[1] = config.general as u8;
+    cells[1] = config.general as St;
     cells
 }
 
 // ruby の Simulator#dump と同じ書式(状態名を | でつなぐ、色なし)。
 // -d モードで ruby と diff 比較できるようにするため。
-fn dump_plain(cells: &[u8], config: &Config) {
+fn dump_plain(cells: &[St], config: &Config) {
     let names: Vec<&str> = cells[1..cells.len() - 1]
         .iter()
         .map(|&c| config.states[c as usize].name.as_str())
@@ -390,7 +328,7 @@ fn dump_plain(cells: &[u8], config: &Config) {
 
 // dump 行を書き出す。color なら dumpln(ルールファイルの前/背景色を
 // 使った ANSI 出力、1〜発火ステップまでの実セルのみ)を用いる。
-fn dump_line(cells: &[u8], config: &Config, color: bool) {
+fn dump_line(cells: &[St], config: &Config, color: bool) {
     if color {
         dumpln(cells, config);
         return;
@@ -403,8 +341,8 @@ fn dump_line(cells: &[u8], config: &Config, color: bool) {
 // (並列ではワーカー間のトークン同期の中で全体を一つのタイミングで
 //  参照できる地点がないため、ダンプモードは逐次実行にしている)
 fn simulate_dump(
-    current: &mut Vec<u8>,
-    next_cells: &mut Vec<u8>,
+    current: &mut Vec<St>,
+    next_cells: &mut Vec<St>,
     config: &Config,
     n: usize,
     color: bool,
@@ -421,8 +359,8 @@ fn simulate_dump(
 }
 
 fn simulate<'a>(
-    mut current: &'a mut [u8],
-    mut next_cells: &'a mut [u8],
+    mut current: &'a mut [St],
+    mut next_cells: &'a mut [St],
     config: &'a Config,
     n: usize,
 ) -> usize {
@@ -439,13 +377,13 @@ fn simulate<'a>(
 }
 
 struct AryPair<'a> {
-    cur: &'a mut [u8],
-    nex: &'a mut [u8],
+    cur: &'a mut [St],
+    nex: &'a mut [St],
     sender: [Option<Sender<i32>>; 2],
     receiver: [Option<Receiver<i32>>; 2],
 }
 
-fn split<'a>(ary1: &'a mut [u8], ary2: &'a mut [u8], n: isize) -> Vec<AryPair<'a>> {
+fn split<'a>(ary1: &'a mut [St], ary2: &'a mut [St], n: isize) -> Vec<AryPair<'a>> {
     let ary_len = ary1.len() as isize;
     let real_len = ary_len - 2;
 
@@ -499,8 +437,8 @@ fn split<'a>(ary1: &'a mut [u8], ary2: &'a mut [u8], n: isize) -> Vec<AryPair<'a
 }
 
 fn par_simulate<'a>(
-    cur: &'a mut [u8],
-    nex: &'a mut [u8],
+    cur: &'a mut [St],
+    nex: &'a mut [St],
     config: &'a Config,
     n: usize,
     use_avx2: bool,
@@ -757,15 +695,15 @@ struct PlannedSignal {
     time: usize,
     cell: usize,
     to_left: bool,
-    value: u8,
+    value: St,
 }
 
-fn find_state_index(config: &Config, name: &str) -> Option<u8> {
+fn find_state_index(config: &Config, name: &str) -> Option<St> {
     config
         .states
         .iter()
         .position(|s| s.name.trim() == name)
-        .map(|i| i as u8)
+        .map(|i| i as St)
 }
 
 // Umeo §3 (A1/Theorem 2, A2/Theorem 3) の式から信号スケジュールを組み立てる。
@@ -836,8 +774,13 @@ fn plan_a1_signals(analysis: &FaultAnalysis, config: &Config, a3: bool) -> (Vec<
         // で解凍提示する(論文に対する既知の置換装置の記録: SPEC「実装の記録」)。
         let t_1i = t_i(i) + n_i - 1;
         let t_2i = t_1i + delta;
-        let local_thaw = p == 1 && n_i >= 2;
-        let a3_local = a3_ab && !(i == 1 && n_i == 1);
+        // p=1 の解凍は fast 波の壁反射 T3 を D1 遠位口が FT に変換する(局所)。
+        // n_1=1 でも将軍の初期表示を管路入口が担体として拾うので同じ経路。
+        let local_thaw = p == 1;
+        // ②-E: I1 が 1 セル(将軍自身が右端)でも、管路入口が初回 pickup の M を
+        // 担体として拾い(fast 信号の原点)、(www,M,W)→MS33 で凍結+journey を
+        // 始めるので FS/FT 注入は不要。
+        let a3_local = a3_ab;
         if let Some(ft) = ft {
             if n_i >= 2 {
                 notes.push(format!(
@@ -856,10 +799,11 @@ fn plan_a1_signals(analysis: &FaultAnalysis, config: &Config, a3: bool) -> (Vec<
                     )
                 } else {
                     format!(
-                        "I{} frozen Δt={} (FS injected at t={}, FT at t={})",
+                        "I{} frozen Δt={} (1-cell: freeze at t={}, {} at t={})",
                         i,
                         delta,
-                        if t_1i == 0 { 0 } else { t_1i - 1 },
+                        t_1i,
+                        if local_thaw { "T3 echo thaw (rule layer)" } else { "FT" },
                         t_2i - 1
                     )
                 });
@@ -869,17 +813,9 @@ fn plan_a1_signals(analysis: &FaultAnalysis, config: &Config, a3: bool) -> (Vec<
             // A3 ②-C: i>=2 の 1 セル区間は起動 NG 到着時の表示が担体 CB
             // ((NG,L,W)→CB、局所)なので FS も FT も注入しない。I1 が 1 セル
             // (将軍自身が右端、t_11=0)だけは FS/FT 注入を残す(縮退)。
-            if n_i == 1 && !(a3_ab && i >= 2) {
-                if let Some(fs) = fs {
-                    let fs_time = if t_1i == 0 { 0 } else { t_1i - 1 };
-                    plan.push(PlannedSignal {
-                        time: fs_time,
-                        cell: d.start,
-                        to_left: true,
-                        value: fs,
-                    });
-                }
-            }
+            // ②-F: FS 注入は全モードで撤廃。1 セル区間は i>=2 なら (NG,L,W)→CB、
+            // I1 なら (www,M,W)→MS33(将軍の初期表示を管路入口が担体として拾う)。
+            let _ = fs;
             if !local_thaw && !a3_local {
                 plan.push(PlannedSignal {
                     time: t_2i - 1,
@@ -911,22 +847,24 @@ fn plan_a1_signals(analysis: &FaultAnalysis, config: &Config, a3: bool) -> (Vec<
             // が配信可能なら I_i の会合機械(自身の journey は add_birth の
             // 誕生+next_pair_deliverable アームで走る)が放出 NG で I_{i+1} を
             // 起動する。A3 は時刻系がずれるので注入のまま。
-            let pair_deliverable = !a3
-                && c_meet <= n_i
-                && 2 * m_i + 2 * n_next > s1
-                && n_next != 1;
+            // A3 ②-D: 会合機械は A3 でも同じ幾何で動く。+1 は放出 NG が管路入口の
+            // 1 歩遅延線(b 波の前進停留と同じ機械)を通ることで出る(論文: 「各正常
+            // 区間で起動が 1 歩遅れる」。機構は論文に指定なし)。
+            // ②-E: 会合セルが管路入口(c_meet = n_i+1、m_i ∈ {n_i−1, n_i})に落ちる
+            // 対は、管路入口の機械が会合(journey 位相 × cBT 到着)を行い NG を
+            // 生成する。c_meet <= n_i の条件は不要になり、n_i >= 2(journey が
+            // 存在する)だけ残る。
+            let _ = c_meet;
+            // A3: 1 セル区間も journey を持つ((L|NG,CB,W)→LS33、(www,M,W)→MS33)
+            // ので n_i / n_{i+1} の縮退条件は不要。残るのは dt <= S(放出 NG と
+            // 解凍前線の正面衝突)だけ。
+            // ②-F: 放出 NG は解凍前線と交差して起床済みセル上を xNG で走るので
+            // dt <= S の条件も不要。A3 は全対が会合機械で配信される。
+            let pair_deliverable = true;
             let s1_last = sizes[sizes.len() - 1];
             let deliverable = 2 * m_i + 2 * s1_last > s1;
-            if p == 1 {
-                if c_meet > n_i || !deliverable || s1_last == 1 {
-                    plan.push(PlannedSignal {
-                        time: t_i(i + 1) - 1 - (m_i - 1),
-                        cell: d.start,
-                        to_left: false,
-                        value: ng,
-                    });
-                }
-            } else if !pair_deliverable {
+            let _ = (deliverable, s1_last);
+            if !pair_deliverable {
                 plan.push(PlannedSignal {
                     time: t_i(i + 1) - 1 - (m_i - 1),
                     cell: d.start,
@@ -937,40 +875,41 @@ fn plan_a1_signals(analysis: &FaultAnalysis, config: &Config, a3: bool) -> (Vec<
             notes.push(format!("I{} general launched at t={}", i + 1, t_i(i + 1)));
         }
     }
+    notes.push(format!("injected signals = {}", plan.len()));
     (plan, notes)
 }
 
 struct FaultField {
     mask: Vec<bool>,      // 実セル 1..=n が true。0 と n+1(壁)は false
-    to_right: Vec<u8>,    // L→R ストリーム: c が t に保持する「左に由来する値」
-    to_left: Vec<u8>,     // R→L ストリーム: c が t に保持する「右に由来する値」
+    to_right: Vec<St>,    // L→R ストリーム: c が t に保持する「左に由来する値」
+    to_left: Vec<St>,     // R→L ストリーム: c が t に保持する「右に由来する値」
     ctrl: Vec<Ctrl>,      // 制御メッセージチャネル(1..=n)
     frozen: Vec<bool>,    // 凍結フラグ(正常セルのみ効果あり)
-    to_right_nex: Vec<u8>,
-    to_left_nex: Vec<u8>,
+    to_right_nex: Vec<St>,
+    to_left_nex: Vec<St>,
     ctrl_nex: Vec<Ctrl>,
     // A1 モード: 管路は信号だけを運び、アイドル時は境界マーカーを提示する
     signal_only: bool,
     // 信号状態の番号。ルールファイルに無ければ None(www にフォールバック)
-    w_state: Option<u8>,  // R→L 管路のアイドル提示(解凍前の境界マーカー)
-    ft_state: Option<u8>, // 解凍信号
-    ft2_state: Option<u8>, // 解凍後のアイドル提示(σ 線上の壁反射と凍結起動の区別)
-    cb_state: Option<u8>,  // 境界 Carrier(fast 信号の管路 entry pickup 対象)
-    cbt_state: Option<u8>, // 担体横断の専用表示(R2 装填の遠位口 pickup 対象)
-    tr_state: Option<u8>,  // fast 継続の対岸横断状態
+    w_state: Option<St>,  // R→L 管路のアイドル提示(解凍前の境界マーカー)
+    ft_state: Option<St>, // 解凍信号
+    ft2_state: Option<St>, // 解凍後のアイドル提示(σ 線上の壁反射と凍結起動の区別)
+    cb_state: Option<St>,  // 境界 Carrier(fast 信号の管路 entry pickup 対象)
+    cbt_state: Option<St>, // 担体横断の専用表示(R2 装填の遠位口 pickup 対象)
+    tr_state: Option<St>,  // fast 継続の対岸横断状態
     a3: bool,              // A3 時刻系(会合機械の規則を凍結する)
     // 壁反射の左走行波 T3 と、起床済みセル上の複合 carrier <X>T3(chateau+signal)。
     // 遠位口 pickup の対象。pickup した複合は純 FT に変換して管路に乗せる。
-    t3_carriers: Vec<u8>,
+    t3_carriers: Vec<St>,
     // NG 会合放出の保値付き carrier {X}NG(名称が 3 文字で NG で終わる)。
     // 会合セルから 1/1 右走行して I1 右端に現れたとき、to_right 入口 pickup
     // (入口セル d1.0 = D1 左端だけ)がこれを管路に乗せる。
-    ng_carriers: Vec<u8>,
+    ng_carriers: Vec<St>,
     // NG 状態(注入始発の素値)。2 歩提示の判定に使う。
-    ng_state: Option<u8>,
+    ng_state: Option<St>,
     // NG 起動中継の 2 歩提示(遠位口で 1 歩保持)。
-    ng_hold: Vec<u8>,
-    ng_hold_nex: Vec<u8>,
+    ng_hold: Vec<St>,
+    ng_hold_nex: Vec<St>,
     // 故障区間数。to_left 管路への FT 変換 pickup は p=1 のときだけ有効
     // (p>=2 では各区間の解凍は注入 FT で提示され、壁反射波を区間に拾わせると
     //  他区間の波が誤って解凍を起動するため、波は管路の遠位口で消える)
@@ -990,27 +929,53 @@ struct FaultField {
     own_wave: Vec<bool>,
     own_wave_nex: Vec<bool>,
     // A3 ②-C: CB 入庫の 1 ステップ後に流す 2 便目(a 波 aF)。one-shot。
-    ab_hold: Vec<u8>,
-    ab_hold_nex: Vec<u8>,
+    ab_hold: Vec<St>,
+    ab_hold_nex: Vec<St>,
     // 管路口の 1 歩遅延線: 入口 to_right(b 前進の停留)、入口 to_left(a 帰還の停留)
-    r_buf: Vec<u8>,
-    r_buf_nex: Vec<u8>,
-    l_buf: Vec<u8>,
-    l_buf_nex: Vec<u8>,
+    r_buf: Vec<St>,
+    r_buf_nex: Vec<St>,
+    l_buf: Vec<St>,
+    l_buf_nex: Vec<St>,
     // 会合済み入口(abX 提示後、後続の a 脚を呑む)
     ab_consume: Vec<bool>,
     ab_consume_nex: Vec<bool>,
     // 帰還 carrier 族(bR で終わる状態名)、前進/帰還の射影(状態番号→成分)
-    br_carriers: Vec<u8>,
-    fw_proj: Vec<Option<u8>>,
-    bw_proj: Vec<Option<u8>>,
-    bf_state: Option<u8>,
-    af_state: Option<u8>,
-    abx_state: Option<u8>,
-    t3_state: Option<u8>,
-    br_state: Option<u8>,
-    wt3_state: Option<u8>,
-    wbr_state: Option<u8>,
+    br_carriers: Vec<St>,
+    fw_proj: Vec<Option<St>>,
+    bw_proj: Vec<Option<St>>,
+    bf_state: Option<St>,
+    af_state: Option<St>,
+    abx_state: Option<St>,
+    t3_state: Option<St>,
+    br_state: Option<St>,
+    wt3_state: Option<St>,
+    wbr_state: Option<St>,
+    // ②-D: 遠位口の折り返し cBT と帰還波の同時提示(管路の提示値の複合)
+    cbt_t3_state: Option<St>,
+    cbt_br_state: Option<St>,
+    // ②-G: 折り返し cBT と解凍 FT の同時提示(A1、I_{p+1} が 1 セル)
+    cbt_ft_state: Option<St>,
+    // ②-H: 自管路の a 波の管内マーカー(aFo。提示時に aF へ射影)と、遠位口が
+    // 「前ステップに自分の担体(CB / aFo)を提示した」1 歩記憶。折り返しの判定は
+    // これで行う(sticky な own_wave では m_i >= n_i のとき前段の a 波の表示を
+    // 自分の a と誤認して偽の折り返しが起きた: 実測 A3 n=9 -f 2,6-8)。
+    afo_state: Option<St>,
+    own_pres: Vec<bool>,
+    own_pres_nex: Vec<bool>,
+    // ②-E: 凍結 journey の位相集合(複合 ⊕bw 込み)。管路入口の会合判定に使う。
+    j_s33_frozen: Vec<St>,
+    j_s3a_frozen: Vec<St>,
+    // ②-E: 管路がまだ何も運んでいない(初期状態)。初回 pickup で左隣が M
+    // (= 1 セル I1 の将軍の初期表示)なら担体として拾う(fast 信号の原点)。
+    pipe_virgin: Vec<bool>,
+    m_state: Option<St>,
+    // ②-E 重ね合わせ: 前進対 aF⊕bF(名前が aFbF で始まる)、帰還対 T3⊕bR
+    // (名前が T3bR で終わる)、管路提示の cBT⊕T3⊕bR。
+    is_abf: Vec<bool>,
+    is_t3br: Vec<bool>,
+    abf_state: Option<St>,
+    t3br_state: Option<St>,
+    cbt_t3br_state: Option<St>,
     trace_fb: bool,
 }
 
@@ -1021,7 +986,7 @@ impl FaultField {
 
     // 値 v が NG 起動中継の 2 歩提示の対象か(会合放出の保値付き carrier
     // {X}NG、または注入始発の素の NG 状態)。
-    fn is_ng_launch(&self, v: u8) -> bool {
+    fn is_ng_launch(&self, v: St) -> bool {
         self.ng_carriers.contains(&v) || self.ng_state == Some(v)
     }
 
@@ -1070,7 +1035,8 @@ impl FaultField {
         }
         let s = n_i + m_i;
         let c_meet = if s % 2 == 0 { s / 2 + 1 } else { (s + 3) / 2 };
-        !self.a3 && c_meet <= n_i && 2 * m_i + 2 * n_i1 > s && n_i1 != 1
+        let _ = (c_meet, s, n_i, n_i1);
+        true
     }
 
     fn next_pair_deliverable(&self, c: usize) -> bool {
@@ -1099,7 +1065,8 @@ impl FaultField {
         }
         let s = n_i1 + m_i1;
         let c_meet = if s % 2 == 0 { s / 2 + 1 } else { (s + 3) / 2 };
-        !self.a3 && c_meet <= n_i1 && 2 * m_i1 + 2 * n_i2 > s && n_i2 != 1
+        let _ = (c_meet, s, n_i1, n_i2);
+        true
     }
 
         // c がどれか管路の入口セル(左隣=正常)か。右隣が正常(m=1 管路)でも
@@ -1107,6 +1074,27 @@ impl FaultField {
     fn is_pipe_entry(&self, c: usize) -> bool {
         c >= 1 && self.intact(c - 1)
     }
+
+    fn is_cbt_family(&self, v: St) -> bool {
+        self.cbt_state == Some(v) || self.cbt_t3_state == Some(v) || self.cbt_br_state == Some(v)
+            || self.cbt_t3br_state == Some(v) || self.cbt_ft_state == Some(v)
+    }
+
+    // 遠位口 c が対岸の表示 d_next から cBT(第 2 反射の折り返し)を取り込む
+    // ステップか。A3: 自管路の a 波(fast 継続)表示、非 A3: cBT 表示。
+    fn fold_at_distal(&self, c: usize, d_next: St) -> bool {
+        if !self.this_pair_deliverable(c) || !self.own_pres[c] {
+            return false;
+        }
+        if self.a3 {
+            self.fw_proj[d_next as usize].is_some() && self.fw_proj[d_next as usize] == self.af_state
+        } else {
+            // cBT 表示、または I_{i+1} が 1 セルで担体が即時壁反射した T3 表示
+            // (own_wave は折り返しで落ちるので、自管路の担体の反射に限られる)
+            Some(d_next) == self.cbt_state || Some(d_next) == self.t3_state
+        }
+    }
+
 
     // c の属する管路のインデックス(入口セルから)。無ければ None。
     fn pipe_index_of_entry(&self, c: usize) -> Option<usize> {
@@ -1128,7 +1116,7 @@ impl FaultField {
     // TR は I2 左端の fast 継続表示: R2 装填(会合の 1/1 左走行反射信号)の
     // 源流として素の TR 状態のまま to_left 管路に乗せる(近位口のルール入力に
     // 1 歩だけ提示され、I1 右端の (F_l, F_v, TR) -> {v}R2 で凍結領域を左走行)。
-    fn pickup_thaw(&self, d: u8) -> Option<u8> {
+    fn pickup_thaw(&self, d: St) -> Option<St> {
         if Some(d) == self.ft_state || self.t3_carriers.contains(&d) {
             self.ft_state
         } else if Some(d) == self.cbt_state {
@@ -1164,7 +1152,7 @@ impl FaultField {
         let tr_state = find_state_index(config, "TR");
         // T3 と複合 carrier <X>T3(X ∈ A,B,C,L,M,Q,R)の状態番号。名前の
         // 規約は「T3 で終わる 2〜3 文字の名前」。ルールファイルに無ければ空。
-        let t3_carriers: Vec<u8> = config
+        let t3_carriers: Vec<St> = config
             .states
             .iter()
             .enumerate()
@@ -1180,10 +1168,10 @@ impl FaultField {
                         && name.len() <= 6
                         && name.ends_with("T3"))
             })
-            .map(|(i, _)| i as u8)
+            .map(|(i, _)| i as St)
             .collect();
         // NG 会合放出の保値付き carrier {X}NG(3 文字で NG で終わる名前)。
-        let ng_carriers: Vec<u8> = config
+        let ng_carriers: Vec<St> = config
             .states
             .iter()
             .enumerate()
@@ -1191,7 +1179,7 @@ impl FaultField {
                 let name = s.name.trim();
                 name.len() == 3 && name.ends_with("NG")
             })
-            .map(|(i, _)| i as u8)
+            .map(|(i, _)| i as St)
             .collect();
         let ng_state = find_state_index(config, "NG");
         // b 前進/帰還 carrier(bF / bR)と会合提示(abX)。
@@ -1203,7 +1191,55 @@ impl FaultField {
         let br_state = find_state_index(config, "bR");
         let wt3_state = find_state_index(config, "WT3");
         let wbr_state = find_state_index(config, "WbR");
-        let br_carriers: Vec<u8> = config
+        let cbt_t3_state = find_state_index(config, "cBTT3");
+        let cbt_br_state = find_state_index(config, "cBTbR");
+        let cbt_ft_state = find_state_index(config, "cBTFT");
+        let afo_state = find_state_index(config, "aFo");
+        let frozen_phase = |ph: &str| -> Vec<St> {
+            config
+                .states
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| {
+                    let name = s.name.trim();
+                    let base = if name.ends_with("T3") || name.ends_with("bR") {
+                        &name[..name.len() - 2]
+                    } else {
+                        name
+                    };
+                    base.len() == 4
+                        && base.ends_with(ph)
+                        && base.chars().next().map_or(false, |ch| ch.is_ascii_uppercase())
+                })
+                .map(|(i, _)| i as St)
+                .collect()
+        };
+        let j_s33_frozen = frozen_phase("S33");
+        let j_s3a_frozen = frozen_phase("S3A");
+        let is_abf: Vec<bool> = config
+            .states
+            .iter()
+            .map(|s| s.name.trim().starts_with("aFbF"))
+            .collect();
+        let is_t3br: Vec<bool> = config
+            .states
+            .iter()
+            .map(|s| s.name.trim().ends_with("T3bR"))
+            .collect();
+        let abf_state = find_state_index(config, "aFbF");
+        let t3br_state = find_state_index(config, "T3bR");
+        let cbt_t3br_state = find_state_index(config, "cBTT3bR");
+        let ng_base: Vec<(String, St)> = config
+            .states
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| {
+                let name = s.name.trim();
+                name.len() == 3 && name.ends_with("NG")
+            })
+            .map(|(i, s)| (s.name.trim().to_string(), i as St))
+            .collect();
+        let br_carriers: Vec<St> = config
             .states
             .iter()
             .enumerate()
@@ -1211,36 +1247,42 @@ impl FaultField {
                 let name = s.name.trim();
                 name.len() >= 2 && name.ends_with("bR") && name != "abX"
             })
-            .map(|(i, _)| i as u8)
+            .map(|(i, _)| i as St)
             .collect();
         // 状態名の射影(A3 ②-C): 前進成分(bF/aF/CB/TR/cBT とその複合の接頭部)、
         // 帰還成分(T3/bR で終わる名前)。管路の口は「管に入る成分」だけを運ぶ。
-        let fw_proj: Vec<Option<u8>> = config
+        let fw_proj: Vec<Option<St>> = config
             .states
             .iter()
             .map(|s| {
                 let name = s.name.trim();
-                let base = if name.ends_with("T3") || name.ends_with("bR") {
+                let base = if name.ends_with("T3bR") {
+                    &name[..name.len() - 4]
+                } else if name.ends_with("T3") || name.ends_with("bR") {
                     &name[..name.len() - 2]
                 } else {
                     name
                 };
                 match base {
                     "bF" => bf_state,
-                    "aF" => af_state,
+                    "aF" | "aFbF" => af_state,
                     "CB" => cb_state,
                     "TR" => tr_state,
                     "cBT" => cbt_state,
-                    _ => None,
+                    // ②-D/②-F: 会合放出の担体 {X}NG / xNG(と帰還波との複合)は純 NG に
+                    // 射影する(管路は信号だけを運ぶ。I_{i+1} 左端の起動鍵は純 NG)。
+                    _ => ng_base.iter().find(|(nm, _)| nm == base).and_then(|_| find_state_index(config, "NG")),
                 }
             })
             .collect();
-        let bw_proj: Vec<Option<u8>> = config
+        let bw_proj: Vec<Option<St>> = config
             .states
             .iter()
             .map(|s| {
                 let name = s.name.trim();
-                if name.ends_with("T3") {
+                if name.ends_with("T3bR") {
+                    find_state_index(config, "T3bR")
+                } else if name.ends_with("T3") {
                     t3_state
                 } else if name.ends_with("bR") && name != "abX" {
                     br_state
@@ -1258,8 +1300,8 @@ impl FaultField {
         // そのまま働く=以前の挙動)から L に変更。S33 排出 (www,M,L)->複合 が
         // I_{i+1} 左端の発射後 M 表示でも誤発火するため、管路からの左入力は
         // 細胞 1 と区別できる L を提示する((L,M,r) ミラー規則を生成する)。
-        let idle_to_right = if signal_only { config.soldier as u8 } else { config.external as u8 };
-        let idle_to_left = if signal_only { w_state.unwrap_or(config.external as u8) } else { config.soldier as u8 };
+        let idle_to_right = if signal_only { config.soldier as St } else { config.external as St };
+        let idle_to_left = if signal_only { w_state.unwrap_or(config.external as St) } else { config.soldier as St };
         let mut field = FaultField {
             mask: mask.to_vec(),
             to_right: vec![idle_to_right; n + 2],
@@ -1279,14 +1321,14 @@ impl FaultField {
             t3_carriers,
             ng_carriers,
             ng_state,
-            ng_hold: vec![0u8; n + 2],
-            ng_hold_nex: vec![0u8; n + 2],
-            ab_hold: vec![0u8; n + 2],
-            ab_hold_nex: vec![0u8; n + 2],
-            r_buf: vec![0u8; n + 2],
-            r_buf_nex: vec![0u8; n + 2],
-            l_buf: vec![0u8; n + 2],
-            l_buf_nex: vec![0u8; n + 2],
+            ng_hold: vec![0 as St; n + 2],
+            ng_hold_nex: vec![0 as St; n + 2],
+            ab_hold: vec![0 as St; n + 2],
+            ab_hold_nex: vec![0 as St; n + 2],
+            r_buf: vec![0 as St; n + 2],
+            r_buf_nex: vec![0 as St; n + 2],
+            l_buf: vec![0 as St; n + 2],
+            l_buf_nex: vec![0 as St; n + 2],
             ab_consume: vec![false; n + 2],
             ab_consume_nex: vec![false; n + 2],
             pipes,
@@ -1302,6 +1344,21 @@ impl FaultField {
             br_state,
             wt3_state,
             wbr_state,
+            cbt_t3_state,
+            cbt_br_state,
+            cbt_ft_state,
+            afo_state,
+            own_pres: vec![false; n + 2],
+            own_pres_nex: vec![false; n + 2],
+            j_s33_frozen,
+            j_s3a_frozen,
+            pipe_virgin: vec![true; n + 2],
+            m_state: find_state_index(config, "M"),
+            is_abf,
+            is_t3br,
+            abf_state,
+            t3br_state,
+            cbt_t3br_state,
             trace_fb: std::env::var("FSSP_TRACE_FB").is_ok(),
             p,
             d1,
@@ -1315,7 +1372,7 @@ impl FaultField {
 
     // 1b) 会合判定(冪等: 判定後は l_buf が 0 なので再呼び出しは何もしない)。
     //     ダンプの直前にも呼び、提示値 abX をダンプに反映する。
-    fn premerge(&mut self, current: &[u8]) {
+    fn premerge(&mut self, current: &[St]) {
         let n = self.mask.len() - 2;
         // 1b) A3 ②-C 会合: 管路入口に a 帰還(T3 族)が到着した(遅延線に入った)
         //     ステップに、その上流(1 セル右)に b 帰還(bR 族)が続いていれば自対の
@@ -1346,7 +1403,7 @@ impl FaultField {
 
     // 1 ステップ: cur の状態から全セルの t+1 状態を next_cells に計算してから
     // ストリーム/制御チャネルを進める(更新順序に結果が依存しない)。
-    fn fault_step(&mut self, current: &mut [u8], next_cells: &mut [u8], config: &Config) {
+    fn fault_step(&mut self, current: &mut [St], next_cells: &mut [St], config: &Config) {
         let n = self.mask.len() - 2;
 
         // 壁の状態を次バッファへ保持する(--wallset で壁に外部信号を置くため。
@@ -1409,22 +1466,64 @@ impl FaultField {
                             || distal
                                 .map_or(false, |e| self.this_pair_deliverable(e)));
                     let f = if self.a3 { self.fw_proj[d as usize] } else { None };
-                    if (Some(d) == self.cb_state && cb_ok)
-                        || Some(d) == self.tr_state
-                        || (self.ng_carriers.contains(&d) && cb_ok)
-                    {
+                    if (Some(d) == self.cb_state && cb_ok) || Some(d) == self.tr_state {
                         d
+                    } else if !self.a3 && Some(d) == self.cbt_state {
+                        // 1 セル区間の担体横断表示 cBT = fast 継続(TR として運ぶ)
+                        self.tr_state.unwrap_or(d)
+                    } else if self.ng_carriers.contains(&d) && cb_ok {
+                        // 担体 {X}NG / xNG は純 NG に射影して運ぶ
+                        self.ng_state.unwrap_or(d)
+                    } else if self.a3 && self.is_abf[d as usize] && self.abf_state.is_some() {
+                        // 前進対 aF⊕bF の表示: 両成分を取り込む(入口機械が分解する)
+                        self.abf_state.unwrap()
                     } else if self.a3 && f.is_some() && (f != self.cb_state || cb_ok) {
                         f.unwrap()
                     } else {
                         // アイドル充填: L→R 管路は L を提示する((www,M,L) との
                         // 誤発火回避、new_ctx の idle_to_right と同じ理屈)
-                        if self.signal_only { config.soldier as u8 } else { config.external as u8 }
+                        if self.signal_only { config.soldier as St } else { config.external as St }
                     }
                 } else {
                     current[c - 1]
                 };
-                let idle_r = if self.signal_only { config.soldier as u8 } else { config.external as u8 };
+                let idle_r = if self.signal_only { config.soldier as St } else { config.external as St };
+                // ②-E: 初回 pickup で左隣が将軍 M(1 セル I1、t=0)なら担体 CB と
+                // して拾う(将軍の初期表示 = fast 信号の原点。管路の初期状態による
+                // 局所判定)。
+                let trv = if self.signal_only && self.is_pipe_entry(c)
+                    && self.pipe_virgin[c] && trv == idle_r
+                    && self.m_state.is_some() && Some(current[c - 1]) == self.m_state
+                    && self.cb_state.is_some()
+                {
+                    self.cb_state.unwrap()
+                } else {
+                    trv
+                };
+                if self.is_pipe_entry(c) && trv != idle_r {
+                    self.pipe_virgin[c] = false;
+                }
+                // ②-E 管路入口の会合: 会合セルが入口セル(c_meet = n_i+1)になる対
+                // (m_i ∈ {n_i−1, n_i})では、規則層の会合鍵と同じ 2 形を入口が担う:
+                //   偶数 S: 左隣(I_i 右端)が S3A 位相で cBT(R2 装填)が到着する瞬間
+                //   奇数 S: 左隣が S33 位相で cBT が提示中の瞬間
+                // どちらも次ステップに NG を to_right に生成する(時刻は規則層の
+                // 会合放出と同じ 2n_i+m_i)。A3 では入口の遅延線で +1 される。
+                let trv = if self.signal_only && self.is_pipe_entry(c) && trv == idle_r
+                    && self.ng_state.is_some()
+                {
+                    let inbound_cbt = if self.mask[c + 1] {
+                        self.is_cbt_family(self.to_left[c + 1])
+                    } else {
+                        self.fold_at_distal(c, current[c + 1])
+                    };
+                    let left = current[c - 1];
+                    let meet = (inbound_cbt && self.j_s3a_frozen.contains(&left))
+                        || (self.is_cbt_family(self.to_left[c]) && self.j_s33_frozen.contains(&left));
+                    if meet { self.ng_state.unwrap() } else { trv }
+                } else {
+                    trv
+                };
                 // own_wave: このセルが管路の入口なら、自身の機械の担体(CB)の
                 // 入庫を記録(sticky)。
                 if self.is_pipe_entry(c) {
@@ -1459,38 +1558,74 @@ impl FaultField {
                         //        遅延線で停留させる(論文: b は I_{i+1}..I_p の左端で
                         //        1 歩停留。誕生管路 D_i では停留しない=局所判定)。
                         //        後続の列(aF)も遅延線を通るので順序は保たれる。
+                        //   (iii) ②-E: 停留は b(と NG)だけ。停留中の b と到着した a は
+                        //        同じステップに重ねて提示する(aF⊕bF、論文: b が停留中の
+                        //        セルに次段の a が追いつく)。前進対の表示 aFbF の入庫は
+                        //        a が通過、b が停留で分かれる。
                         let bf = self.bf_state.unwrap();
-                        let (inc, born) = if self.ab_hold[c] != 0 {
+                        let af = self.af_state.unwrap_or(bf);
+                        // 到着成分: pass = 停留しない成分、stall = 停留する成分
+                        let (pass, stall): (Option<St>, Option<St>) = if self.ab_hold[c] != 0 {
                             self.ab_hold_nex[c] = 0;
-                            (self.ab_hold[c], true)
+                            (Some(self.ab_hold[c]), None)
                         } else if Some(trv) == self.cb_state {
-                            // 誕生: a 波(aF)が先発、b 波(bF)が 1 歩後ろ
+                            // 誕生: a 波(aF)が先発、b 波(bF)が 1 歩後ろ。管内では
+                            // 自管路マーカー aFo で運ぶ(提示時に aF へ射影)
                             self.ab_hold_nex[c] = bf;
-                            (self.af_state.unwrap_or(bf), true)
+                            (Some(self.afo_state.unwrap_or(af)), None)
                         } else {
                             self.ab_hold_nex[c] = 0;
-                            (trv, false)
+                            if trv == idle_r {
+                                (None, None)
+                            } else if trv == bf || self.is_ng_launch(trv) {
+                                (None, Some(trv))
+                            } else if Some(trv) == self.abf_state {
+                                (Some(af), Some(bf))
+                            } else {
+                                (Some(trv), None)
+                            }
                         };
-                        if self.r_buf[c] != 0 {
-                            self.to_right_nex[c] = self.r_buf[c];
-                            self.r_buf_nex[c] = if inc != idle_r { inc } else { 0 };
-                        } else if inc == bf && !born {
-                            self.to_right_nex[c] = idle_r;
-                            self.r_buf_nex[c] = bf;
-                        } else {
-                            self.to_right_nex[c] = inc;
-                            self.r_buf_nex[c] = 0;
-                        }
+                        // 会合セルの NG 2 歩表示の 2 便目: 次の対(I_{i+1}, I_{i+2})に
+                        // 会合機械が不要(I_{i+1} が最終区間)なら呑む(journey を
+                        // 生まないため。非 A3 の「2 便目を呑む」と同じ判定を遅延線で)。
+                        let stall = match stall {
+                            Some(v) if self.is_ng_launch(v)
+                                && !self.next_pair_deliverable(c)
+                                && (self.is_ng_launch(self.r_buf[c]) || self.is_ng_launch(self.to_right[c])) => None,
+                            other => other,
+                        };
+                        let released: Option<St> = if self.r_buf[c] != 0 { Some(self.r_buf[c]) } else { None };
+                        self.r_buf_nex[c] = stall.unwrap_or(0);
+                        self.to_right_nex[c] = match (released, pass) {
+                            (None, None) => idle_r,
+                            (Some(r), None) => r,
+                            (None, Some(p)) => p,
+                            (Some(r), Some(p)) => {
+                                if r == bf && p == af && self.abf_state.is_some() {
+                                    self.abf_state.unwrap()
+                                } else {
+                                    if self.trace_fb {
+                                        eprintln!("pipe: cell{} forward overlap {} + {}", c,
+                                            config.states[r as usize].name.trim(),
+                                            config.states[p as usize].name.trim());
+                                    }
+                                    r
+                                }
+                            }
+                        };
                     } else {
                         self.to_right_nex[c] = trv;
                         self.r_buf_nex[c] = 0;
                         self.ab_hold_nex[c] = 0;
                     }
+                    // 2 歩提示のアームは「提示値」で判定する(A3 の入口遅延線では
+                    // 到着 trv と提示値が 1 歩ずれる。非 A3 では同じ値)。
+                    let presented = self.to_right_nex[c];
                     if self.intact(c + 1)
-                        && self.is_ng_launch(trv)
+                        && self.is_ng_launch(presented)
                         && self.next_pair_deliverable(c)
                     {
-                        self.ng_hold_nex[c] = trv;
+                        self.ng_hold_nex[c] = presented;
                     } else if self.intact(c + 1)
                         && !self.next_pair_deliverable(c)
                         && self.is_ng_launch(self.to_right[c])
@@ -1506,38 +1641,71 @@ impl FaultField {
                 //       WT3/WbR(境界マーカー W 付き)として運ぶ。
                 //   p=1(非 A3): FT 変換(解凍)と TR (R2 装填の源流)。
                 //   p>=2(非 A3): TR のみ、own_wave の管路だけ。
-                let distal_pick = |d_next: u8| -> Option<u8> {
+                let distal_pick = |d_next: St| -> Option<St> {
                     if self.a3 && self.signal_only {
-                        match self.bw_proj[d_next as usize] {
+                        // ②-D: 自管路の a 波(=fast 継続)が I_{i+1} 左端に表示された
+                        // ステップに cBT を折り返す(R2 装填。A2 の cBT 表示 pickup と
+                        // 同時刻)。own_wave は折り返し後に落とす(one-shot)。
+                        let fold = self.fold_at_distal(c, d_next);
+                        let wave = match self.bw_proj[d_next as usize] {
                             Some(b) if Some(b) == self.t3_state => self.wt3_state,
                             Some(b) if Some(b) == self.br_state => self.wbr_state,
+                            Some(b) if Some(b) == self.t3br_state => self.t3br_state,
                             _ => None,
+                        };
+                        match (fold, wave) {
+                            (false, w) => w,
+                            (true, None) => self.cbt_state,
+                            (true, Some(w)) if Some(w) == self.wt3_state => self.cbt_t3_state,
+                            (true, Some(w)) if Some(w) == self.wbr_state => self.cbt_br_state,
+                            (true, Some(w)) if Some(w) == self.t3br_state => self.cbt_t3br_state,
+                            (true, Some(w)) => Some(w),
                         }
                     } else {
-                        let allowed = if self.p == 1 {
-                            self.d1.map_or(true, |(_, e)| c == e)
+                        // 非 A3: 折り返し(自管路の担体の cBT/即時反射 T3 表示)と、
+                        // p=1 の解凍変換(T3 族 → FT)。同時なら複合 cBTFT。
+                        let fold = self.fold_at_distal(c, d_next);
+                        let base = if self.p == 1 && self.d1.map_or(true, |(_, e)| c == e) {
+                            self.pickup_thaw(d_next)
                         } else {
-                            self.this_pair_deliverable(c)
-                                && self.own_wave_of_distal(c)
-                                && Some(d_next) == self.cbt_state
+                            None
                         };
-                        if allowed { self.pickup_thaw(d_next) } else { None }
+                        match (fold, base) {
+                            (true, Some(b)) if Some(b) == self.ft_state => {
+                                self.cbt_ft_state.or(self.cbt_state)
+                            }
+                            (true, _) => self.cbt_state,
+                            (false, b) => b,
+                        }
                     }
                 };
                 self.to_left_nex[c] = if self.signal_only && c > 1 && !self.mask[c - 1] {
                     // 入口(左隣が正常セル)。入来信号を提示に優先させる。
-                    let mut inbound: Option<u8> = if self.mask[c + 1] {
+                    let mut inbound: Option<St> = if self.mask[c + 1] {
                         let v = self.to_left[c + 1];
-                        if v == config.external as u8 { None } else { Some(v) }
+                        if v == config.external as St { None } else { Some(v) }
                     } else {
                         distal_pick(current[c + 1])
                     };
                     if self.a3 && self.signal_only {
-                        let is_b = inbound.map_or(false, |v| self.br_carriers.contains(&v));
+                        // ②-D: 入来値を折り返し成分(cBT、停留しない)と帰還波成分
+                        // (WT3/WbR 族、a は停留)に分ける。
+                        // 成分分解: 折り返し cBT(停留しない)、a 帰還 WT3(停留)、
+                        // b 帰還 WbR(停留しない)。帰還対 T3bR は a と b に分かれる。
+                        let (fold, wave_a, mut wave_b): (bool, Option<St>, Option<St>) = match inbound {
+                            Some(v) if Some(v) == self.cbt_state => (true, None, None),
+                            Some(v) if self.cbt_t3_state == Some(v) => (true, self.wt3_state, None),
+                            Some(v) if self.cbt_br_state == Some(v) => (true, None, self.wbr_state),
+                            Some(v) if self.cbt_t3br_state == Some(v) => (true, self.wt3_state, self.wbr_state),
+                            Some(v) if self.is_t3br[v as usize] => (false, self.wt3_state, self.wbr_state),
+                            Some(v) if self.t3_carriers.contains(&v) => (false, Some(v), None),
+                            Some(v) => (false, None, Some(v)),
+                            None => (false, None, None),
+                        };
                         // 会合済み入口: 後続の b 脚(bR 族)を呑む(消費)
                         if self.ab_consume[c] {
-                            if is_b {
-                                inbound = None;
+                            if wave_b.map_or(false, |v| self.br_carriers.contains(&v)) {
+                                wave_b = None;
                                 self.ab_consume_nex[c] = true;
                             } else {
                                 self.ab_consume_nex[c] = false;
@@ -1545,19 +1713,31 @@ impl FaultField {
                         } else {
                             self.ab_consume_nex[c] = false;
                         }
-                        let is_a = inbound.map_or(false, |v| self.t3_carriers.contains(&v));
                         // a 帰還の停留 = 入口の 1 歩遅延線(論文: a は帰還時に各
-                        // 故障区間の左端で 1 歩停留)。
-                        if self.l_buf[c] != 0 {
-                            let out = self.l_buf[c];
-                            self.l_buf_nex[c] = inbound.unwrap_or(0);
-                            inbound = Some(out);
-                        } else if is_a {
-                            self.l_buf_nex[c] = inbound.unwrap();
-                            inbound = None;
-                        } else {
-                            self.l_buf_nex[c] = 0;
-                        }
+                        // 故障区間の左端で 1 歩停留)。b は止まらない。
+                        let out_a: Option<St> = if self.l_buf[c] != 0 { Some(self.l_buf[c]) } else { None };
+                        self.l_buf_nex[c] = wave_a.unwrap_or(0);
+                        let out_wave: Option<St> = match (out_a, wave_b) {
+                            (None, w) => w,
+                            (Some(a), None) => Some(a),
+                            (Some(a), Some(b)) => {
+                                // 停留明けの a と到着 b の同時提示 = 自対の会合は premerge
+                                // が abX にしている。ここに来るのは論文条件外の配置。
+                                if self.trace_fb {
+                                    eprintln!("pipe: cell{} a/b overlap at entry (non-paper layout)", c);
+                                }
+                                self.l_buf_nex[c] = if self.l_buf_nex[c] == 0 { b } else { self.l_buf_nex[c] };
+                                Some(a)
+                            }
+                        };
+                        // 折り返しと波が同じステップなら複合で提示
+                        inbound = match (fold, out_wave) {
+                            (false, w) => w,
+                            (true, None) => self.cbt_state,
+                            (true, Some(w)) if Some(w) == self.wt3_state => self.cbt_t3_state,
+                            (true, Some(w)) if Some(w) == self.wbr_state => self.cbt_br_state,
+                            (true, Some(w)) => Some(w),
+                        };
                     }
                     match inbound {
                         Some(v) => v,
@@ -1566,24 +1746,45 @@ impl FaultField {
                             // 直後にアイドルを FT2(解凍後位相)へ切り替え、以後保つ。
                             let cur = self.to_left[c];
                             if (self.ft2_state.is_some()
-                                && (Some(cur) == self.ft_state || Some(cur) == self.abx_state))
+                                && (Some(cur) == self.ft_state
+                                    || Some(cur) == self.abx_state
+                                    || Some(cur) == self.cbt_ft_state))
                                 || self.ft2_state == Some(cur)
                             {
                                 self.ft2_state.unwrap()
                             } else if w.is_some() {
                                 w.unwrap()
                             } else {
-                                config.external as u8
+                                config.external as St
                             }
                         }
                     }
                 } else if self.mask[c + 1] {
                     self.to_left[c + 1]
                 } else if self.signal_only {
-                    distal_pick(current[c + 1]).unwrap_or(config.external as u8)
+                    distal_pick(current[c + 1]).unwrap_or(config.external as St)
                 } else {
                     current[c + 1]
                 };
+                // ②-H: 遠位口の 1 歩記憶(このステップに提示した値が自分の担体か)
+                if self.signal_only && !self.mask[c + 1] {
+                    let v = self.to_right[c];
+                    self.own_pres_nex[c] = Some(v) == self.cb_state || Some(v) == self.afo_state;
+                }
+                // ②-D: 遠位口で cBT を折り返したら own_wave を落とす(one-shot)
+                if self.signal_only && !self.mask[c + 1]
+                    && self.cbt_state.is_some()
+                    && (Some(self.to_left_nex[c]) == self.cbt_state
+                        || Some(self.to_left_nex[c]) == self.cbt_t3_state
+                        || Some(self.to_left_nex[c]) == self.cbt_br_state
+                        || Some(self.to_left_nex[c]) == self.cbt_t3br_state)
+                {
+                    let entries: Vec<usize> = self.pipes.iter()
+                        .filter(|&&(_, e)| e == c).map(|&(s, _)| s).collect();
+                    for s in entries {
+                        self.own_wave_nex[s] = false;
+                    }
+                }
                 // 故障セルの基本状態は変わらない(遷移規則は使わない)
                 next_cells[c] = current[c];
             } else {
@@ -1591,7 +1792,8 @@ impl FaultField {
                 // ストリーム値を見る(左隣からは L→R ストリーム、右隣からは
                 // R→L ストリーム)。
                 let left = if self.mask[c - 1] {
-                    self.to_right[c - 1]
+                    let v = self.to_right[c - 1];
+                    if self.afo_state == Some(v) { self.af_state.unwrap_or(v) } else { v }
                 } else {
                     current[c - 1]
                 };
@@ -1603,9 +1805,9 @@ impl FaultField {
                 next_cells[c] = if self.frozen[c] {
                     current[c] // 凍結: 状態変化を止めて保持
                 } else {
-                    let v = config.rules[((left as usize) << 16) + ((current[c] as usize) << 8) + (right as usize)];
+                    let v = config.rules[((left as usize) << (2 * BITS)) + ((current[c] as usize) << BITS) + (right as usize)];
                     // 診断: 未定義鍵(状態 0=FB への遷移)を環境変数 FSSP_TRACE_FB で表示
-                    let kidx = ((left as usize) << 16) + ((current[c] as usize) << 8) + (right as usize);
+                    let kidx = ((left as usize) << (2 * BITS)) + ((current[c] as usize) << BITS) + (right as usize);
                     if v == 0 && self.trace_fb && (config.defined[kidx / 64] >> (kidx % 64)) & 1 == 0 {
                         eprintln!(
                             "FB: cell{} ({}, {}, {})",
@@ -1634,13 +1836,14 @@ impl FaultField {
         std::mem::swap(&mut self.l_buf, &mut self.l_buf_nex);
         std::mem::swap(&mut self.ab_consume, &mut self.ab_consume_nex);
         std::mem::swap(&mut self.own_wave, &mut self.own_wave_nex);
+        std::mem::swap(&mut self.own_pres, &mut self.own_pres_nex);
     }
 
     // 凍結状態のダンプ(-f/--inject 指定時のみ)。凍結セルに * を出す。
     // A1 モードでは、凍結変状態 F(x) を表示しているセル(ルール層で凍結)も * で
     // 示す(FA/FB/FC/FL/FM/FQ/FR = 2 文字の F で始まる状態名)。
     // 各行の列幅は状態行と揃えて位置を対応させる。
-    fn dump_frozen(&self, current: &[u8], config: &Config) {
+    fn dump_frozen(&self, current: &[St], config: &Config) {
         let mut row = String::from("F:");
         for c in 1..current.len() - 1 {
             let width = config.states[current[c] as usize].name.len();
@@ -1666,7 +1869,7 @@ impl FaultField {
 
     // ストリーム内容のダンプ(故障区間のあるときのみ呼ぶ。各行の列幅は状態行と
     // 揃えて位置を対応させる)。正常セルは空白。
-    fn dump_streams(&self, current: &[u8], config: &Config, prefix: &str) {
+    fn dump_streams(&self, current: &[St], config: &Config, prefix: &str) {
         let mut row = String::from(prefix);
         for c in 1..current.len() - 1 {
             let width = config.states[current[c] as usize].name.len();
@@ -1692,7 +1895,7 @@ impl FaultField {
 }
 
 // 同期成功の判定は正常セルのみで行う(故障セルは発火状態に遷移しない)
-fn fired_intact(cells: &[u8], mask: &[bool], firing: usize) -> bool {
+fn fired_intact(cells: &[St], mask: &[bool], firing: usize) -> bool {
     for i in 1..cells.len() - 1 {
         if !mask[i] && cells[i] as usize != firing {
             return false;
@@ -1709,13 +1912,13 @@ fn fired_intact(cells: &[u8], mask: &[bool], firing: usize) -> bool {
 // メッセージは「時刻 t にその時刻のセルに置かれる=そのステップで到着処理される」。
 // 戻り値は終了した時刻(正常セル全発火または上限)。
 fn simulate_fault(
-    current: &mut Vec<u8>,
-    next_cells: &mut Vec<u8>,
+    current: &mut Vec<St>,
+    next_cells: &mut Vec<St>,
     ff: &mut FaultField,
     config: &Config,
     cap: usize,
     injections: &[(Ctrl, usize, usize)],
-    wallsets: &[(u8, usize)],
+    wallsets: &[(St, usize)],
     signals: &[PlannedSignal],
     dump: bool,
     color: bool,
@@ -1727,7 +1930,14 @@ fn simulate_fault(
         for sig in signals {
             if sig.time == t {
                 if sig.to_left {
-                    ff.to_left[sig.cell] = sig.value;
+                    // A2 の FT 注入が管路の折り返し cBT と同じステップに重なる
+                    // (I_{i+1} が 1 セル: 担体の即時壁反射と解凍時刻の一致)
+                    // ときは複合 cBTFT で提示する(管路内容を上書きしない)。
+                    if Some(sig.value) == ff.ft_state && ff.is_cbt_family(ff.to_left[sig.cell]) {
+                        ff.to_left[sig.cell] = ff.cbt_ft_state.unwrap_or(sig.value);
+                    } else {
+                        ff.to_left[sig.cell] = sig.value;
+                    }
                 } else {
                     ff.to_right[sig.cell] = sig.value;
                     // 注入始発の NG(会合放出の注入代替): 遠位口で 2 歩提示
@@ -2126,11 +2336,11 @@ fn main() {
         };
 
         // --wallset の状態名をルールファイルの状態番号に解決する
-        let wallsets: Vec<(u8, usize)> = wallsets
+        let wallsets: Vec<(St, usize)> = wallsets
             .into_iter()
             .map(|(name, t)| {
                 match config.states.iter().position(|s| s.name.trim() == name) {
-                    Some(idx) => (idx as u8, t),
+                    Some(idx) => (idx as St, t),
                     None => {
                         eprintln!("--wallset: unknown state: {}", name);
                         eprintln!("{}", USAGE);
@@ -2250,15 +2460,14 @@ mod tests {
             st("S", ""),
             st("G", "general"),
         ];
-        let mut rules: Box<[u8; 1 << 24]> =
-            vec![0u8; 1 << 24].into_boxed_slice().try_into().unwrap();
-        for l in 0u8..4 {
-            for r in 0u8..4 {
+        let mut rules: Vec<St> = vec![0 as St; TBL + 2];
+        for l in 0 as St..4 {
+            for r in 0 as St..4 {
                 // 中心 Q: 隣に S がいれば S になる(両方向 1/1 進行)、いなければ Q
-                rules[((l as usize) << 16) + (1 << 8) + (r as usize)] =
+                rules[((l as usize) << (2 * BITS)) + (1 << BITS) + (r as usize)] =
                     if l == 2 || r == 2 { 2 } else { 1 };
                 // 中心 S: 発信して Q に戻る
-                rules[((l as usize) << 16) + (2 << 8) + (r as usize)] = 1;
+                rules[((l as usize) << (2 * BITS)) + (2 << BITS) + (r as usize)] = 1;
             }
         }
         Config {
@@ -2268,7 +2477,7 @@ mod tests {
             firing: 3,
             external: 0,
             rules,
-            defined: vec![0u64; (1 << 24) / 64],
+            defined: vec![0u64; TBL / 64],
         }
     }
 
@@ -2281,8 +2490,8 @@ mod tests {
     }
 
     fn run_steps(
-        cur: &mut Vec<u8>,
-        nex: &mut Vec<u8>,
+        cur: &mut Vec<St>,
+        nex: &mut Vec<St>,
         ff: &mut FaultField,
         cfg: &Config,
         k: usize,
@@ -2479,7 +2688,7 @@ mod probe_tests {
         }
         assert_eq!(config.general, 5, "P0 index");
         assert_eq!(config.external, 15, "www index");
-        let got = nextcell(config.external as u8, config.general as u8, config.soldier as u8, &config);
+        let got = nextcell(config.external as St, config.general as St, config.soldier as St, &config);
         assert_eq!(got as usize, config.general, "rule (www,P0,Q) must yield P0");
     }
 

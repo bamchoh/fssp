@@ -31,6 +31,10 @@ ROOT = os.path.dirname(HERE)
 BIN = os.path.join(HERE, 'target', 'release', 'fssp.exe')
 BASE_RULE = os.path.join(ROOT, 'balzer.rul.txt')
 OUT_RULE = os.path.join(ROOT, 'balzer-freeze.rul.txt')
+# add_ab の出力(実行用の完全な規則表、約 720 万規則 / 200 MB、git 管理外)。
+# OUT_RULE(リポジトリの balzer-freeze.rul.txt)は add_ab の入力 = ②-B までの
+# 生成器連鎖(gen→add_a1→add_composite→add_meeting→add_collisions→add_birth)の結果。
+FULL_RULE = os.path.join(ROOT, 'balzer-freeze-full.rul.txt')
 
 PAD = 5  # 状態名の桁幅(balzer.rul.txt と同一)
 
@@ -86,7 +90,7 @@ def emit(rulemap, keys):
     return [f'{pad(a)}##{pad(b)}##{pad(c)}->{pad(rulemap[(a, b, c)])}' for (a, b, c) in keys]
 
 
-def write_file(states, pre, post, rule_lines):
+def write_file(states, pre, post, rule_lines, path=None):
     # rule_number 行の数値を書き換える
     out = []
     for l in pre:
@@ -98,7 +102,7 @@ def write_file(states, pre, post, rule_lines):
             out.append(l)
     text = '\r\n'.join(
         out[:2] + states + out[2:] + rule_lines + post) + '\r\n'
-    with open(OUT_RULE, 'w', newline='') as f:
+    with open(path or OUT_RULE, 'w', newline='') as f:
         f.write(text)
 
 
@@ -330,7 +334,7 @@ def cells(row):
 def golden_rows(n):
     # 会合機械入りルールの障害なし走行(凍結ケースの基準。機械自身の
     # S33 排出表示も期待どおりに含むことに注意)
-    return state_rows(run(BIN, ['-r', OUT_RULE, '-s', str(n), '-d']))
+    return state_rows(run(BIN, ['-r', FULL_RULE, '-s', str(n), '-d']))
 
 
 def golden_base(n):
@@ -397,7 +401,7 @@ def discover():
         for (n, t1, dt) in CASES:
             gold = golden_rows(n)
             act = state_rows(run(BIN, [
-                '-r', OUT_RULE, '-s', str(n), '-d',
+                '-r', FULL_RULE, '-s', str(n), '-d',
                 '--wallset', f'FS@{t1 - 1}', '--wallset', f'FT@{t1 + dt - 1}']))
             exp = expected_grid(gold, n, t1, dt)
             # 最初の不一致行のみから規則を導出する。それ以前の行は正しい
@@ -451,7 +455,7 @@ def verify():
     for (n, t1, dt) in CASES:
         gold = golden_rows(n)
         act = state_rows(run(BIN, [
-            '-r', OUT_RULE, '-s', str(n), '-d',
+            '-r', FULL_RULE, '-s', str(n), '-d',
             '--wallset', f'FS@{t1 - 1}', '--wallset', f'FT@{t1 + dt - 1}']))
         exp = expected_grid(gold, n, t1, dt)
         bad = 0
@@ -635,7 +639,7 @@ def a1_expected(gold1_c, gold2_c, n1, m1, n2):
 def run_a1(n1, m1, n2):
     n = n1 + m1 + n2
     spec = f'{n1 + 1}' if m1 == 1 else f'{n1 + 1}-{n1 + m1}'
-    text = run(BIN, ['-r', OUT_RULE, '-s', str(n), '-d', '-f', spec])
+    text = run(BIN, ['-r', FULL_RULE, '-s', str(n), '-d', '-f', spec])
     return state_rows(text), text
 
 
@@ -1236,34 +1240,65 @@ def add_ab():
     #     T3 鍵を bR に鏡写し(bR ≡ T3 の挙動)、(3) 解凍鍵 abX、(4) ホスト
     #     (L/X/F_v/CB/W/bF/aF)に波が乗る複合鍵を既存鍵から不動点で複製
     #     (右レーン=吸収、中央=放出、左レーン=通過済み)。既存鍵は上書きしない。
-    states, rules, pre, post = load(OUT_RULE)
+    states, rules, pre, post = load(OUT_RULE)   # 入力 = 基底(②-B まで)
     rulemap = parse_rules(rules)
     names = [state_name(s) for s in states]
     held = ['A', 'B', 'C', 'L', 'M', 'Q', 'R']
     fv = ['F' + h for h in held]   # FB(凍結 B)は状態 0 と同じ名前だが凍結値として実在
     lo = {h: h.lower() for h in held}
     phn = ('S33', 'S3A', 'S3B')
-    journeys = [lo[h] + ph for h in held for ph in phn]
+    # journey(1/3 信号)の複合: 起床済みセル lo[X]+ph と凍結セル X+ph の両系。
+    # ②-D(A3 の NG 会合機械)では journey 滞在中のセルを他区間の帰還波
+    # (T3/bR)が 1/1 で抜けるので、両系とも bw を 1 歩運ぶ複合が要る。
+    journeys = ([lo[h] + ph for h in held for ph in phn]
+                + [h + ph for h in held for ph in phn])
+    uj = [h + ph for h in held for ph in phn]   # 凍結 journey(大文字ホスト)
     bws = ('T3', 'bR')
     fws = ('bF', 'aF')
-    hosts_plain = ['L'] + [h for h in held if h != 'L'] + fv + ['CB', 'W'] + list(fws)
+    # ②-E 重ね合わせ: 前進対 aFbF(停留中の b に次段の a が追いつく)と、その
+    # 壁反射 T3bR(帰還対)。起床済み/未起床セルにだけ乗る(凍結区間には入らない:
+    # 帰還対は D_p 入口で a が停留して分かれる)。
+    fws3 = ('bF', 'aF', 'aFbF')
+    bws3 = ('T3', 'bR', 'T3bR')
+    # ②-D: R2(第 2 反射、凍結セル上を左走)、{X}NG(会合放出、右走)、管路が
+    # 折り返す cBT も帰還波と同時刻・同方向に重なるので bw 複合を持つ。
+    r2s = [h + 'R2' for h in held]
+    ngs = [h + 'NG' for h in held]
+    # ②-F: 起床済みセル上を右走する NG 担体 xNG(小文字ホスト。放出 NG が解凍
+    # 前線と正面衝突して解凍済み領域を横断する dt <= S 配置)。
+    wk = {h: lo[h] + 'NG' for h in held}
+    wks = list(wk.values())
+    # ②-G: 起床済みセル上を左走する R2 担体 xR2(A1 で I_{p+1} が 1 セルのとき、
+    # 壁反射が即時なので折り返し cBT と解凍 FT が同時に届き、R2 が解凍前線と
+    # 同じセルを走る)。管路の提示値 cBTFT = cBT ⊕ FT。
+    wk2 = {h: lo[h] + 'R2' for h in held}
+    wk2s = list(wk2.values())
+    hosts_plain = (['L'] + [h for h in held if h != 'L'] + fv + ['CB', 'W']
+                   + list(fws3) + journeys + r2s + ngs + ['cBT'] + wks + wk2s)
 
     def plus(h, bw):
         if h == 'L':
             return bw
-        if h in held or h in fv or h in ('CB', 'W') or h in fws:
+        if bw == 'T3bR':
+            return h + bw if (h in held or h in fws3 or h == 'cBT') else None
+        if h in held or h in fv or h in ('CB', 'W') or h in fws3:
             return h + bw
-        if h in journeys and bw == 'T3':
-            return h + 'T3'
+        if h in journeys or h in r2s or h in ngs or h == 'cBT' or h in wks or h in wk2s:
+            return h + bw
         if h == 'F':
             return 'F'          # 発火は波を消す(発火時刻に波が重なる鍵の目標)
         return None
 
     def split(x):
         # 複合名 → (host, bw)。純ホストは (x, None)。
-        if x in bws:
+        if x in bws3:
             return ('L', x)
         if x == 'abX':
+            return (x, None)
+        if x.endswith('T3bR'):
+            h = x[:-4]
+            if h in held or h in fws3 or h == 'cBT':
+                return (h, 'T3bR')
             return (x, None)
         for bw in bws:
             if x.endswith(bw) and len(x) > 2:
@@ -1272,8 +1307,14 @@ def add_ab():
                     return (h, bw)
         return (x, None)
 
-    newn = list(fws) + ['bR', 'abX', 'WT3', 'WbR', 'LbR']
-    for h in [x for x in held if x != 'L'] + fv + ['CB'] + list(fws):
+    newn = list(fws) + ['bR', 'abX', 'WT3', 'WbR', 'LbR', 'aFbF', 'T3bR',
+                        'aFbFT3', 'aFbFbR', 'aFT3bR', 'bFT3bR', 'cBTT3bR',
+                        'aFbFT3bR']
+    newn += [h + 'T3bR' for h in held if h != 'L']
+    newn += wks + [w + bw for w in wks for bw in bws]
+    newn += wk2s + ['cBTFT', 'aFo']   # aFo: 管内専用(自管路の a 波マーカー、規則なし)
+    for h in ([x for x in held if x != 'L'] + fv + ['CB'] + list(fws) + journeys
+              + r2s + ngs + ['cBT']):
         for bw in bws:
             newn.append(h + bw)
     for nm in newn:
@@ -1295,12 +1336,12 @@ def add_ab():
     # ── 1. 未起床セル上の波の重ね合わせ ─────────────────────────────────
     def fw_of(x):
         h, _ = split(x)
-        return h if h in fws else None
+        return h if h in fws3 else None
 
     def bw_of(x):
         return split(x)[1]
 
-    reflect = {'bF': 'bR', 'aF': 'T3'}
+    reflect = {'bF': 'bR', 'aF': 'T3', 'aFbF': 'T3bR'}
 
     def combine(fw, bw):
         if fw is None and bw is None:
@@ -1311,13 +1352,13 @@ def add_ab():
             return bw
         return fw + bw
 
-    comps_fw = [f + bw for f in fws for bw in bws]
+    comps_fw = [f + bw for f in fws3 for bw in bws3 if f + bw in lane_set]
     xbw = [plus(h, bw) for h in held if h != 'L' for bw in bws]
     # 起床セル複合 <X>bw が左右に来る鍵は choreography の遷移を伴うので
     # ここでは生成せず、既存鍵からの複製(4.)に任せる。
-    c_set = ['L'] + list(fws) + list(bws) + comps_fw
-    l_set = ['L', 'www'] + list(fws) + list(bws) + comps_fw
-    r_set = (['L', 'www', 'W', 'FT2', 'WT3', 'WbR'] + list(fws) + list(bws)
+    c_set = ['L'] + list(fws3) + list(bws3) + comps_fw
+    l_set = ['L', 'www'] + list(fws3) + list(bws3) + comps_fw
+    r_set = (['L', 'www', 'W', 'FT2', 'WT3', 'WbR'] + list(fws3) + list(bws3)
              + comps_fw)
     n1 = 0
     for c in c_set:
@@ -1372,6 +1413,42 @@ def add_ab():
         put((ml, mc, mr), mt)
         n2 += n_add[0] - before
 
+    # ── 2b. L ホスト複合 LT3/LbR/LT3bR と純 T3/bR/T3bR の同一視 ───────────
+    #    未起床の L に波が乗った表示は ②-B 生成器が 'LT3'(woken L ホスト)、
+    #    未起床族が 'T3' と名付けたが、意味は同じ(セルは L)。レーンに L+bw を
+    #    持つ鍵は純 bw 版の目標に揃える(純版が存在するとき)。放置すると
+    #    (M,L,LT3)→T3 のように choreography(C 波の誕生)が落ちる
+    #    (実測: A2 n=11 -f 3,6 で I3 が 1 歩遅れる)。
+    n2b = 0
+    lbw = {'L' + bw: bw for bw in bws3}
+    for (l, c, r), t in list(rulemap.items()):
+        if not any(x in lbw for x in (l, c, r)):
+            continue
+        pure = (lbw.get(l, l), lbw.get(c, c), lbw.get(r, r))
+        pt = rulemap.get(pure)
+        if pt is None or pt == t:
+            continue
+        before = n_add[0]
+        put((l, c, r), pt, keep=False)
+        n2b += n_add[0] - before
+    # 純 bw レーンの鍵に L+bw 版が無ければ同じ目標で作る(例 (L,TR,T3)→T3 に対する
+    # (L,TR,LT3): A2 で 1 セル区間が連続し fast 継続 TR が複数本走ると、先頭の
+    # 壁反射エコーが後続 TR と対面する。実測 A2 n=13 -f 3,5,7,9)。
+    inv = {bw: 'L' + bw for bw in bws3}
+    for (l, c, r), t in list(rulemap.items()):
+        lanes = (l, c, r)
+        if not any(x in inv for x in lanes):
+            continue
+        for i in range(3):
+            if lanes[i] in inv:
+                k2 = list(lanes)
+                k2[i] = inv[lanes[i]]
+                k2 = tuple(k2)
+                if k2 not in rulemap:
+                    before = n_add[0]
+                    put(k2, t)
+                    n2b += n_add[0] - before
+
     # ── 3. 解凍鍵: (l, F_v, abX) = (l, F_v, FT) ─────────────────────────
     n3 = 0
     for (l, c, r), t in list(rulemap.items()):
@@ -1386,8 +1463,182 @@ def add_ab():
                 put((l, c + bw, 'abX'), t)
         n3 += n_add[0] - before
 
+    # ── 3a. ②-E 1 セル区間の journey(会合機械を 1 セル区間にも適用する) ──
+    #    i>=2: 起動 NG で CB を表示した次ステップから凍結 journey LS33→LS3A→
+    #          LS3B→FL(左入力は管路アイドル L、または 2 歩提示の 2 歩目 NG)。
+    #    i=1 : 将軍 M の右が管路(W)なら t=0 に凍結+journey MS33→…→FM。
+    #          管路入口は初回 pickup の M を担体として拾う(rust)。
+    n3a = 0
+    for key, tgt in [(('L', 'CB', 'W'), 'LS33'), (('NG', 'CB', 'W'), 'LS33'),
+                     (('LNG', 'CB', 'W'), 'LS33'), (('www', 'M', 'W'), 'MS33'),
+                     # A2: 1 セル区間に担体 CB が提示されたときの横断表示(右が管路 W)。
+                     # 折り返し(R2 装填)の判定表示で、fast 継続は次の管路入口が
+                     # cBT 表示を TR として拾う(rust)。表示後は L に戻る。
+                     (('CB', 'L', 'W'), 'cBT'), (('L', 'cBT', 'W'), 'L')]:
+        before = n_add[0]
+        put(key, tgt, keep=False)
+        n3a += n_add[0] - before
+
+    # ── 3c. 起動 NG と帰還波の同時到着: 起動が勝つ。(NG|LNG|{X}NG, L, L)→M の
+    #    右レーンを未起床セル上の波(T3/bR/T3bR と L ホスト複合)に広げ、目標に
+    #    波を乗せる(M⊕bw)。add_collisions の (NG, L, T3族)→T3(通過)を上書き
+    #    する: 管路入口会合を A2 でも有効にしたことで、fast 波の T3 エコーが
+    #    起動 NG と同時に I_{i+1} 左端に来る配置が現れた(実測 n=10 -f 3,6)。
+    n3c = 0
+    ng_lanes = ['NG', 'LNG'] + [h + 'NG' for h in held] + wks
+    for lng in ng_lanes:
+        t0 = rulemap.get((lng, 'L', 'L'))
+        if t0 is None and lng in wks:
+            # 起床済み担体の起動キーは凍結担体 {X}NG と同じ((xNG,L,L)→M 等)
+            src = lng[0].upper() + 'NG'
+            for r in ('L', 'www', 'W', 'FT2'):
+                t = rulemap.get((src, 'L', r))
+                if t is not None:
+                    put((lng, 'L', r), t)
+            t0 = rulemap.get((lng, 'L', 'L'))
+        if t0 is None:
+            continue
+        # fast 波の継続 TR が右隣にいる瞬間の起動(n_i=1 かつ m_i=1: TR が 1 歩先)
+        put((lng, 'L', 'TR'), t0)
+    # TR(右走 fast 継続)は未起床 L の右隣にいても透明: (l, L, TR) = (l, L, L)
+    for (l, c, r), t in list(rulemap.items()):
+        if c == 'L' and r == 'L' and l not in ('L', 'www'):
+            before = n_add[0]
+            put((l, 'L', 'TR'), t)
+            n3c += n_add[0] - before
+    # 実験 ②-G: n_{i+1}=1 の担体表示を一般形に揃える(cBT 表示→次ステップ壁反射)
+    if os.environ.get('FSSP_CBT1'):
+        put(('CB', 'L', 'www'), 'cBT', keep=False)
+        put(('L', 'cBT', 'www'), 'T3', keep=False)
+        for bw in bws3:
+            for r in (bw, 'L' + bw):
+                tt = plus(t0, bw)
+                if tt is None:
+                    continue
+                before = n_add[0]
+                put((lng, 'L', r), tt, keep=False)
+                n3c += n_add[0] - before
+
+    # ── 3e. ②-F 会合放出と解凍の同時: R2 が解凍前線の 1 歩先を走る配置
+    #    (i=p、n_{p+1}=1)では、会合セルの右隣が放出のステップに既に解凍済み。
+    #    会合鍵 (l, c, r)→wNG の右レーンを起床済み状態に広げ、目標は「解凍した
+    #    値に NG を乗せた担体」(xNG)にする。
+    n3e = 0
+    emit_keys = [(k, t) for k, t in rulemap.items() if t in ngs and k[2] in ['W', 'L'] + fv]
+    for (l, c, r), t in emit_keys:
+        hc, bc = split(c)
+        base_c = ('F' + hc[0]) if (hc.endswith('R2') and hc[0] in held) else hc
+        if base_c not in fv:
+            continue
+        for r2 in held + ['abX', 'FT']:
+            t2 = rulemap.get((l, base_c, r2))
+            if t2 is None and r2 in ('abX', 'FT') and l in uj:
+                t2 = rulemap.get(('F' + l[0], base_c, r2))   # journey レーン = 凍結値
+            if t2 is None:
+                continue
+            ht2, bt2 = split(t2)
+            if ht2 not in held:
+                continue
+            nt = lo[ht2] + 'NG'
+            if bt2:
+                nt = nt + bt2 if (nt + bt2) in lane_set else None
+            if nt is None:
+                continue
+            before = n_add[0]
+            put((l, c, r2), nt, keep=False)
+            n3e += n_add[0] - before
+
+    # ── 3f. ②-G 解凍と R2 装填の同時(cBTFT)、起床済み R2 担体との会合 ──────
+    def r2w_target(t):
+        ht, bt = split(t)
+        if ht == 'F':
+            return 'F'
+        if ht in held and bt is None:
+            return wk2[ht]
+        return None
+    n3f = 0
+    uj = [h + ph for h in held for ph in phn]
+    r2set = [h + 'R2' for h in held]
+    # 3g. 凍結 journey セルの右隣が起床済み(前線が会合前に通過、または会合と解凍
+    #     の同時): journey を落として凍結値の解凍遷移に従う。
+    for (l, c, r), t in list(rulemap.items()):
+        if c not in fv or r not in held:
+            continue
+        for ph in phn:
+            jc = c[1] + ph
+            if jc not in lane_set:
+                continue
+            before = n_add[0]
+            put((l, jc, r), t)                 # 前線が通過: journey を落とす
+            put((l, jc, wk2[r]), t)            # 右隣で会合(R2 消費)しつつ解凍
+            put((l, jc, wk[r]), t)             # 右隣の NG(右走)は無関係
+            n3f += n_add[0] - before
+    # 奇数 S の会合鍵 (vS33, wR2, r)→wNG の右レーンに FT2(解凍後の管路アイドル。
+    # A1 で I_{p+1} が 1 セルのときは R2 装填と同時に解凍位相に入る)を加える。
+    for (l, c, r), t in list(rulemap.items()):
+        if r == 'W' and c in r2set and t in ngs:
+            before = n_add[0]
+            put((l, c, 'FT2'), t)
+            n3f += n_add[0] - before
+    # cBTFT = cBT ⊕ FT: cBT の効果(R2 装填 / 会合放出 / journey 続行)と解凍を合成
+    for (l, c, r), t_cbt in list(rulemap.items()):
+        if r != 'cBT':
+            continue
+        is_j = c in uj
+        base_c = ('F' + c[0]) if is_j else c
+        if base_c not in fv:
+            continue
+        t_ft = rulemap.get((l, base_c, 'FT'))
+        if t_ft is None:
+            continue
+        ht, bt = split(t_ft)
+        if t_cbt in r2set:
+            nt = r2w_target(t_ft)
+        elif t_cbt in ngs:
+            nt = wk[ht] if (ht in held and bt is None) else None
+        else:
+            nt = t_ft
+        if nt is None:
+            continue
+        before = n_add[0]
+        put((l, c, 'cBTFT'), nt, keep=False)
+        n3f += n_add[0] - before
+    for (l, c, r), t in list(rulemap.items()):
+        if t not in ngs:
+            continue
+        # 偶数 S: 右隣の R2 が起床済み担体 → 中央は解凍しつつ放出(xNG)
+        if r in r2set and c in fv:
+            s_ = r[0]
+            th = rulemap.get((l, c, s_))
+            if th is not None and split(th)[0] in held and split(th)[1] is None:
+                before = n_add[0]
+                put((l, c, wk2[s_]), wk[split(th)[0]])
+                n3f += n_add[0] - before
+        # 奇数 S: 中央の R2 が起床済み担体 → 放出しつつ中央は起床済みの遷移(xNG)。
+        # 右隣は凍結(W/fv)のほか解凍済み(held)も取る(前線と同走する R2)。
+        if c in r2set:
+            w_ = c[0]
+            for r2 in [r] + held:
+                th = (rulemap.get((l, w_, r2)) or rulemap.get(('F' + l[0], w_, r2))
+                      or rulemap.get((l[0], w_, r2)))
+                if th is not None and split(th)[0] in held and split(th)[1] is None:
+                    before = n_add[0]
+                    put((l, wk2[w_], r2), wk[split(th)[0]])
+                    n3f += n_add[0] - before
+
+    # ── 3b. ②-E 管路入口の会合: 会合セルが入口セルに落ちる対では cBT(第 2
+    #    反射)が I_i 右端の journey 滞在中に提示される。R2 は装填せず(会合は
+    #    入口の機械が行う)、journey はアイドル W を見たときと同じ進行をする。
+    n3b = 0
+    uj = [h + ph for h in held for ph in phn]
+    for (l, c, r), t in list(rulemap.items()):
+        if r == 'W' and c in uj:
+            before = n_add[0]
+            put((l, c, 'cBT'), t)
+            n3b += n_add[0] - before
+
     # ── 4. ホストに波が乗る複合鍵の不動点複製 ───────────────────────────
-    carriers = set(hosts_plain) | set(bws) | set(comps_fw) | set(xbw) \
+    carriers = set(hosts_plain) | set(bws3) | set(comps_fw) | set(xbw) \
         | set(v + bw for v in fv for bw in bws) | set('CB' + bw for bw in bws)
     n4 = 0
     for _round in range(6):
@@ -1400,23 +1651,100 @@ def add_ab():
             ht, bt = split(t)
             # (A) 右レーンの吸収: r が素ホストで、中央が波を運べるとき
             if br_ is None and hr in hosts_plain and c in carriers:
-                for bw in bws:
+                for bw in bws3:
                     nr = plus(hr, bw)
                     nt = plus(ht, bw) if bt is None else (t if bt == bw else None)
                     if nr and nt:
                         cands.append(((l, c, nr), nt))
             # (B) 中央の放出: 中央が素ホストなら複合でも同じ遷移
             if bc is None and hc in hosts_plain and hc != 'W':
-                for bw in bws:
+                for bw in bws3:
                     nc = plus(hc, bw)
                     if nc:
                         cands.append(((l, nc, r), t))
             # (C) 左レーンの通過済み
             if bl is None and hl in hosts_plain and hl != 'W':
-                for bw in bws:
+                for bw in bws3:
                     nl = plus(hl, bw)
                     if nl:
                         cands.append(((nl, c, r), t))
+            # ②-F 右走 NG 担体の族(bw 族の鏡像): NG は左隣から入り(A')、中央から
+            # 出て(B')、右隣に乗っていても自身の遷移は変わらない(C')。
+            #   ホストの対応: 起床済み X ↔ xNG、凍結 FX ↔ XNG(既存の凍結担体)。
+            def fw_host(x):
+                # レーン値 → (NG を外したホスト, NG 付きの名前)。無ければ None。
+                hx, bx = split(x)
+                if hx in held:
+                    return (x, plus(wk[hx], bx) if bx else wk[hx])
+                if hx in fv and hx != 'FL':
+                    return (x, plus(hx[1] + 'NG', bx) if bx else hx[1] + 'NG')
+                return None
+            def fw_target(t):
+                ht, bt = split(t)
+                if ht == 'F':
+                    return 'F'
+                if ht in held:
+                    return plus(wk[ht], bt) if bt else wk[ht]
+                if ht in fv and ht != 'FL':
+                    return plus(ht[1] + 'NG', bt) if bt else ht[1] + 'NG'
+                return None
+            if hc in held or hc in fv:
+                fl = fw_host(l)
+                if fl is not None and fl[1]:
+                    nt = fw_target(t)
+                    if nt:
+                        before = n_add[0]
+                        # 起床済み中央は上書き(旧設計「前線が勝つ」= NG を吸収する
+                        # (XNG, 起床済み, r)→t を、NG を乗せて運ぶ遷移に置換する)
+                        # 常に上書き: 旧設計「前線が勝つ」(NG を吸収する遷移)を、
+                        # NG を乗せて運ぶ遷移に置換する(凍結目標なら既存と同値)
+                        put((fl[1], c, r), nt, keep=False)
+                        added += n_add[0] - before
+            # R2 担体(凍結 FX ↔ XR2): 中央の放出と左レーンの通過済みは凍結値と
+            # 同じ遷移(解凍前線の直前を走る R2 が前線に追われて解凍するとき等)
+            if hc in fv and hc != 'FL' or hc == 'FL':
+                nc = hc[1] + 'R2'
+                if bc is None and nc in lane_set:
+                    before = n_add[0]
+                    put((l, nc, r), t)
+                    added += n_add[0] - before
+            if hl in fv and bl is None:
+                nl = hl[1] + 'R2'
+                if nl in lane_set:
+                    before = n_add[0]
+                    put((nl, c, r), t)
+                    added += n_add[0] - before
+            fc = fw_host(c)
+            if fc is not None and fc[1]:
+                before = n_add[0]
+                put((l, fc[1], r), t)
+                # 左隣も担体(会合セルの NG 2 歩表示の 2 歩目): 既に乗っている NG と
+                # 同じものなので吸収しない=中央の放出と同じ遷移
+                fl2 = fw_host(l)
+                if fl2 is not None and fl2[1]:
+                    put((fl2[1], fc[1], r), t, keep=False)
+                added += n_add[0] - before
+            fr = fw_host(r)
+            if fr is not None and fr[1]:
+                before = n_add[0]
+                put((l, c, fr[1]), t)
+                added += n_add[0] - before
+            # ②-G 起床済み R2 担体 xR2(左走): (A) 右隣の xR2 を吸収(中央は起床済み
+            # または解凍中の凍結セル)、(B) 中央の放出、(C) 左レーンは通過済み
+            if hr in held and br_ is None and (hc in held or hc in fv) and bc is None:
+                nt = r2w_target(t)
+                if nt:
+                    before = n_add[0]
+                    put((l, c, wk2[hr]), nt)
+                    added += n_add[0] - before
+            if hc in held and bc is None and c not in ('L',):
+                before = n_add[0]
+                put((l, wk2[hc], r), t)
+                added += n_add[0] - before
+            if hl in held and bl is None and l not in ('L',):
+                before = n_add[0]
+                put((wk2[hl], c, r), t)
+                added += n_add[0] - before
             for k, tt in cands:
                 before = n_add[0]
                 put(k, tt)
@@ -1425,9 +1753,10 @@ def add_ab():
         if added == 0:
             break
     ordered = emit(rulemap, list(rulemap.keys()))
-    write_file(states, pre, post, ordered)
+    write_file(states, pre, post, ordered, path=FULL_RULE)   # 出力 = 完全規則表
     print(f'add_ab: states={len(states)} rules={len(ordered)} '
-          f'(+{n_add[0]}: asleep {n1}, mirror {n2}, thaw {n3}, clone {n4})')
+          f'(+{n_add[0]}: asleep {n1}, mirror {n2}, Lbw-unify {n2b}, thaw {n3}, '
+          f'1cell {n3a}, launch+wave {n3c}, meet+thaw {n3e}, r2w {n3f}, pipe-meet {n3b}, clone {n4})')
 
 
 def add_collisions():
@@ -1647,10 +1976,16 @@ def verify_a1():
                 continue
             ac, ec = cells(row), exp[t]
             for k, (a, e) in enumerate(zip(ac, ec)):
-                if a.strip() != e.strip():
+                a, e = a.strip(), e.strip()
+                # ②-F/②-G: 起床済みセル上の担体 xNG / xR2(dt <= S で放出 NG が
+                # 解凍前線を越えて走る等)は表示上ホストに重なるだけ(choreography
+                # はホストのもの)。照合はホストで行う。
+                if len(a) == 3 and a[0].islower() and a[1:] in ('NG', 'R2'):
+                    a = a[0].upper()
+                if a != e:
                     bad += 1
                     if first is None:
-                        first = (t, k + 1, a.strip(), e.strip())
+                        first = (t, k + 1, a, e)
         want = 2 * n - 2 + 1
         fire_ok = len(act) == want
         status = 'OK' if (bad == 0 and fire_ok) else 'NG'
@@ -1737,12 +2072,14 @@ def sweep_a2():
     import itertools
 
     def a2_run(n, spec):
-        return run(BIN, ['-r', OUT_RULE, '-s', str(n), '-f', spec])
+        return run(BIN, ['-r', FULL_RULE, '-s', str(n), '-f', spec])
 
     def check(n, spec, segs, fails):
         fails[1] += 1
         out = a2_run(n, spec)
-        if f'SYNCED (intact cells) at t={2 * n - 2}' not in out:
+        p_ = spec.count(',') + 1
+        if (f'SYNCED (intact cells) at t={2 * n - 2}' not in out
+                or f'injected signals = {p_}' not in out):
             fails[0] += 1
             print(f'FAIL n={n} -f {spec} (n/m={segs})')
             for line in out.splitlines():
@@ -1918,7 +2255,7 @@ def verify_seg(a3_only=False):
         golds = [[cells(r) for r in golden_rows(sz)]
                  for idx_i, sz in [(k, sizes[k]) for k in range(0, len(sizes), 2)]]
         flag = ['--a3'] if a3 else []
-        act = state_rows(run(BIN, ['-r', OUT_RULE, '-s', str(n), '-d', '-f', spec] + flag))
+        act = state_rows(run(BIN, ['-r', FULL_RULE, '-s', str(n), '-d', '-f', spec] + flag))
         exp = seg_expected(a3, sizes, golds)
         bad = 0
         for t, row in enumerate(act):
@@ -1967,9 +2304,10 @@ def sweep_a3():
                             continue
                         total += 1
                         out = run(BIN, [
-                            '-r', OUT_RULE, '-s', str(n),
+                            '-r', FULL_RULE, '-s', str(n),
                             '-f', f'{a1}-{b1},{a2}-{b2}', '--a3'])
-                        if f'SYNCED (intact cells) at t={2 * n - 2 + 2}' not in out:
+                        if (f'SYNCED (intact cells) at t={2 * n - 2 + 2}' not in out
+                                or 'injected signals = 0' not in out):
                             fails += 1
                             print(f'FAIL n={n} -f {a1}-{b1},{a2}-{b2} (sizes={sizes})')
     # p=3: 全配置列挙 (n=8..14, n_i >= m_i で A3 条件は p<=3 では自明)。
@@ -1996,12 +2334,13 @@ def sweep_a3():
                                 spec3 = (f'{a1}-{b1},{a2}-{b2},'
                                          + (f'{a3b}' if a3b == b3 else f'{a3b}-{b3}'))
                                 out = run(BIN, [
-                                    '-r', OUT_RULE, '-s', str(n),
+                                    '-r', FULL_RULE, '-s', str(n),
                                     '-f', spec3, '--a3'])
-                                if f'SYNCED (intact cells) at t={2 * n - 2 + 3}' not in out:
+                                if (f'SYNCED (intact cells) at t={2 * n - 2 + 3}' not in out
+                                        or 'injected signals = 0' not in out):
                                     fails += 1
                                     print(f'FAIL p3 n={n} -f {spec3} (sizes={sizes})')
-    print(f'A3 sweep: {total} layouts, {fails} failures (p=2 + p=3)')
+    print(f'A3 sweep: {total} layouts, {fails} failures (p=2 + p=3; SYNCED at 2n-2+p and 0 injections)')
 
 
 # ── A1 (p=1) の全配置スイープ ─────────────────────────────────────────
@@ -2016,18 +2355,19 @@ def sweep_a1():
                 if n1 < m1 or n2 < 1:
                     continue
                 spec = f'{n1+1}' if m1 == 1 else f'{n1+1}-{n1+m1}'
-                out = run(BIN, ['-r', OUT_RULE, '-s', str(n), '-f', spec])
+                out = run(BIN, ['-r', FULL_RULE, '-s', str(n), '-f', spec])
                 total += 1
-                if f'SYNCED (intact cells) at t={2 * n - 2}' not in out:
+                if (f'SYNCED (intact cells) at t={2 * n - 2}' not in out
+                        or 'injected signals = 0' not in out):
                     fails += 1
                     print(f'FAIL n={n} -f {spec} (n1={n1} m1={m1} n2={n2})')
-    print(f'A1 sweep n=5..16: {total} layouts, {fails} failures')
+    print(f'A1 sweep n=5..16: {total} layouts, {fails} failures (SYNCED at 2n-2 and 0 injections)')
     import check_keys  # 遅延(import 順の循環を避ける)
     spots = [(22, 4, 3), (30, 4, 3), (30, 7, 5), (40, 10, 8), (50, 20, 10),
              (50, 5, 1), (44, 3, 2), (36, 9, 9), (50, 45, 2)]
     for (n, n1, m1) in spots:
         spec = f'{n1+1}' if m1 == 1 else f'{n1+1}-{n1+m1}'
-        out = run(BIN, ['-r', OUT_RULE, '-s', str(n), '-f', spec])
+        out = run(BIN, ['-r', FULL_RULE, '-s', str(n), '-f', spec])
         ok = f'SYNCED (intact cells) at t={2 * n - 2}' in out
         und = check_keys.check(n, spec, verbose=False)
         if not ok or und:
