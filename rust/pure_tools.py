@@ -201,7 +201,7 @@ def add_pure(verbose=True):
         # L 宿主 ⊕ 帰還成分の既存名(L⊕T3bR は 'T3bR' と名付けられている)
         if ov == '':
             return 'L'
-        return 'L' + ov if ('L' + ov) in nameset else ov
+        return ov if ov in nameset else 'L' + ov   # 正規名は純形(T3/bR/T3bR)
 
     def ov_next(ov, r):
         # L 宿主に重なった帰還成分 ov が、右隣 r を見て次ステップにどうなるか
@@ -254,9 +254,14 @@ def add_pure(verbose=True):
     #   左端は bF を無視、bF2 で b が来たとして扱う。
     add_state('bF2')
     pj['bF2'] = 'L'
+    # 右端に着いた b(帰還波 T3/bR と同時の複合 bFT3/bFbR/bFT3bR も)は 1 歩停留 bF2 へ。
+    # 帰還成分は次ステップに左へ去るので停留状態には残らない。
     for (l, c, r), t in list(rm.items()):
-        if c == 'bF' and r == 'W' and t == 'L':
-            b2[(l, 'bF', 'W')] = 'bF2'
+        if fwd(c) == 'bF' and not c.startswith('FL') and r == 'W' and t in ('L', 'LT3', 'LbR', 'T3', 'bR', 'T3bR'):
+            b2[(l, c, 'W')] = 'bF2'
+    put(('L', 'bF2', 'W'), 'L')
+    for (l, c, r), t in list(rm.items()):
+        if c == 'bF' and r == 'W':
             put((l, 'bF2', 'W'), 'L')
     for (l, c, r), t in list(rm.items()):
         if l == 'bF':
@@ -342,18 +347,26 @@ def add_pure(verbose=True):
                 pj[hold] = pj.get(t0, t0)
             b2[(l, c, r_t3)] = hold
             n_hold += 1
-    # 右端の帰還 b の取り込み: (l, c, W) → t があって (l, c, WbR) が無ければ t ⊕ bR
+    # 右端の帰還 b / 第 2 反射の取り込み: (l, c, W) → t に対し
+    #   (l, c, WbR) → t ⊕ bR、(l, c, cBT) → t ⊕ R2。右端専用の上書き(B2 の W 鍵)が
+    #   あるときは密な表に鍵があっても上書きする(停留中の b を失わないため)。
     n_pb = 0
     for (l, c, r) in list(rm.keys()) + list(b2.keys()):
         if r != 'W' or c.endswith(HOLD):
             continue
-        if (l, c, 'WbR') in rm or (l, c, 'WbR') in b2:
-            continue
+        override = (l, c, 'W') in b2
         t = b2.get((l, c, 'W'), rm.get((l, c, 'W')))
-        pb = pickup(t, 'bR') if t else None
-        if pb is not None:
-            b2[(l, c, 'WbR')] = pb
-            n_pb += 1
+        if not t:
+            continue
+        for (r_in, comp) in (('WbR', 'bR'), ('cBT', 'R2')):
+            if not override and ((l, c, r_in) in rm or (l, c, r_in) in b2):
+                continue
+            if comp == 'R2' and (l, c, 'cBT') not in rm and not override:
+                continue
+            pb = pickup(t, comp)
+            if pb is not None:
+                b2[(l, c, r_in)] = pb
+                n_pb += 1
     # 解放規則(保持状態ごと。t0 の W 文脈の鍵を全て写す)
     hold_states = sorted({x for x in nameset if x.endswith(HOLD)})
     for hold in hold_states:
@@ -382,6 +395,21 @@ def add_pure(verbose=True):
                     rel3 = pickup(t3, 'T3')
                     if rel3 is not None:
                         put((l2, hold, r3), rel3)
+
+    # ── 6a. L 宿主の別名(LT3≡T3、LbR≡bR、LT3bR≡T3bR)の鍵を相互に補完 ──────────
+    ALIAS = {k: v for k, v in {'LT3': 'T3', 'LbR': 'bR', 'LT3bR': 'T3bR'}.items()
+             if k in nameset and v in nameset}
+    ALIAS.update({v: k for k, v in list(ALIAS.items())})
+    n_alias = 0
+    for (l, c, r), t in list(rm.items()):
+        if not (l in ALIAS or c in ALIAS or r in ALIAS):
+            continue
+        import itertools
+        opts = [[x, ALIAS[x]] if x in ALIAS else [x] for x in (l, c, r)]
+        for k in itertools.product(*opts):
+            if k not in rm:
+                rm[k] = t
+                n_alias += 1
 
     # ── 6b. 1/3 信号の発火透過: 位相成分を剥がした基底鍵が F なら F ──────────
     #   最終区間に生まれる 1/3 信号は会合相手が無く発火時まで残る。www レーンの
@@ -461,7 +489,7 @@ def add_pure(verbose=True):
         print(f'pure: dense {len(dense_lines)}, B0 {len(b0_lines)}')
     if verbose:
         print(f'pure: wall overrides {n_force[0]}')
-        print(f'pure: holds {n_hold}, bR-pickup {n_pb}, fire-transparency {n_fire}, transient {len(transient)} ({n_tr} rules)')
+        print(f'pure: holds {n_hold}, bR-pickup {n_pb}, alias {n_alias}, fire-transparency {n_fire}, transient {len(transient)} ({n_tr} rules)')
         print(f'pure: states {len(states)} (+{len(newn)}), dense rules {len(rm)} (+{n_dense[0]}), '
               f'PL {len(pl_lines)} PR {len(pr_lines)} PJ {len(pj_lines)} B1 {len(b1)} B2 {len(b2)}, '
               f'thawed family {len(thawed)}')
