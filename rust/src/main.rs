@@ -2801,6 +2801,10 @@ mod tests {
             external: 0,
             rules,
             defined: vec![0u64; TBL / 64],
+            pl: vec![],
+            pr: vec![],
+            pj: vec![],
+            bmap: std::collections::HashMap::new(),
         }
     }
 

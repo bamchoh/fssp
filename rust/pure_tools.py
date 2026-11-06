@@ -352,9 +352,19 @@ def add_pure(verbose=True):
     pj['bF2'] = 'L'
     # 右端に着いた b(帰還波 T3/bR と同時の複合 bFT3/bFbR/bFT3bR も)は 1 歩停留 bF2 へ。
     # 帰還成分は次ステップに左へ去るので停留状態には残らない。
+    # 境界条件 n_i + m_i = p − i では a_{i+1} が停留中の b_i に追いつく: 到着した a と
+    # 停留中の b を同時に表示する aFbF2(線は aFbF として運ぶ=重ね合わせ)。
+    add_state('aFbF2')
+    pj['aFbF2'] = 'aF'
     for (l, c, r), t in list(rm.items()):
-        if fwd(c) == 'bF' and not c.startswith('FL') and r == 'W' and t in ('L', 'LT3', 'LbR', 'T3', 'bR', 'T3bR'):
-            b2[(l, c, 'W')] = 'bF2'
+        if fwd(c) == 'bF' and not c.startswith('FL') and r == 'W':
+            if fwd(l) == 'aF':
+                b2[(l, c, 'W')] = 'aFbF2'
+            elif t in ('L', 'LT3', 'LbR', 'T3', 'bR', 'T3bR', 'aF'):
+                b2[(l, c, 'W')] = 'bF2'
+    for (l, c, r), t in list(rm.items()):
+        if c == 'L' and r == 'W':
+            put((l, 'aFbF2', 'W'), t)
     # 停留明け: 保持していた b は線へ出る(表示は消える)。セルは「左入力 l を見た
     # 静止 L」と同じ遷移(a の到着 (aF,L,W)→aF、凍結起動 (C,L,W)→CB も含む)。
     for (l, c, r), t in list(rm.items()):
@@ -402,20 +412,6 @@ def add_pure(verbose=True):
     #   後処理: 右端に現れうる全ての中央状態 c((l, c, W) を持つもの)について
     #   (l, c, WT3) → cT3h、(l, cT3h, W) → (l, c, WT3) の目標(無ければ W の目標 ⊕ T3)、
     #   (l, cT3h, WbR) → (l, c, abX) の目標(b が 1 歩後ろ = 自対の会合 → 解凍)。
-    n_hold = 0
-    # 右入力の基底 r_in とそれに T3 が重なった入力 r_in⊕T3(W→WT3、cBT→cBTT3、cBTbR→cBTT3bR)
-    for (r_in, r_t3) in (('W', 'WT3'), ('cBT', 'cBTT3'), ('cBTbR', 'cBTT3bR')):
-        keys = [(l, c) for (l, c, r) in list(rm.keys()) + list(b2.keys()) if r == r_in and not c.endswith(HOLD)]
-        for (l, c) in sorted(set(keys)):
-            t0 = b2.get((l, c, r_in), rm.get((l, c, r_in)))
-            if t0 is None or t0 == 'F' or t0.endswith(HOLD):
-                continue
-            hold = t0 + HOLD
-            if hold not in nameset:
-                add_state(hold)
-                pj[hold] = pj.get(t0, t0)
-            b2[(l, c, r_t3)] = hold
-            n_hold += 1
     # 右端の帰還 b / 第 2 反射の取り込み: (l, c, W) → t に対し
     #   (l, c, WbR) → t ⊕ bR、(l, c, cBT) → t ⊕ R2。右端専用の上書き(B2 の W 鍵)が
     #   あるときは密な表に鍵があっても上書きする(停留中の b を失わないため)。
@@ -436,6 +432,52 @@ def add_pure(verbose=True):
             if pb is not None:
                 b2[(l, c, r_in)] = pb
                 n_pb += 1
+    # ── 一時複合(宿主⊕帰還成分)の規則: 宿主の規則を写す(密/B2 とも)。保持の解放
+    #    規則の生成前と最後に呼ぶ(保持状態の基底が一時複合のことがある)。
+    tr_seen = set()
+    tr_count = [0]
+
+    def copy_transients():
+        idx_all = {}
+        for (l, c, r), t in rm.items():
+            idx_all.setdefault(c, []).append((l, r, t))
+        idx_b2 = {}
+        for (l, c, r), t in b2.items():
+            idx_b2.setdefault(c, []).append((l, r, t))
+        while True:
+            todo = [x for x in transient if x not in tr_seen]
+            if not todo:
+                break
+            for (cs, h) in todo:
+                tr_seen.add((cs, h))
+                for (l, r, t) in list(idx_all.get(h, [])):
+                    if (l, cs, r) not in rm:
+                        rm[(l, cs, r)] = t
+                        idx_all.setdefault(cs, []).append((l, r, t))
+                        tr_count[0] += 1
+                for (l, r, t) in list(idx_b2.get(h, [])):
+                    if (l, cs, r) not in b2:
+                        b2[(l, cs, r)] = t
+                        idx_b2.setdefault(cs, []).append((l, r, t))
+                        tr_count[0] += 1
+
+    n_hold = 0
+    # 右入力の基底 r_in とそれに T3 が重なった入力 r_in⊕T3(W→WT3、cBT→cBTT3、cBTbR→cBTT3bR)
+    # 境界条件 n_i + m_i = p − i では b_i と a_{i+1} が同時に壁に着き、帰還対 T3bR として
+    # 右端に同時に来る(T3 は保持、bR は取り込み)。
+    for (r_in, r_t3) in (('W', 'WT3'), ('cBT', 'cBTT3'), ('cBTbR', 'cBTT3bR'), ('WbR', 'T3bR')):
+        keys = [(l, c) for (l, c, r) in list(rm.keys()) + list(b2.keys()) if r == r_in and not c.endswith(HOLD)]
+        for (l, c) in sorted(set(keys)):
+            t0 = b2.get((l, c, r_in), rm.get((l, c, r_in)))
+            if t0 is None or t0 == 'F' or t0.endswith(HOLD):
+                continue
+            hold = t0 + HOLD
+            if hold not in nameset:
+                add_state(hold)
+                pj[hold] = pj.get(t0, t0)
+            b2[(l, c, r_t3)] = hold
+            n_hold += 1
+    copy_transients()
     # 解放規則(保持状態ごと。t0 の W 文脈の鍵を全て写す)
     hold_states = sorted({x for x in nameset if x.endswith(HOLD)})
     idx_c = {}
@@ -504,31 +546,8 @@ def add_pure(verbose=True):
             rm[(l, c, r)] = 'F'
             n_fire += 1
 
-    # ── 6c. 一時複合(宿主⊕帰還成分)の規則: 宿主の規則を写す(密/B2 とも) ────
-    n_tr = 0
-    seen = set()
-    idx_all = {}
-    for (l, c, r), t in rm.items():
-        idx_all.setdefault(c, []).append((l, r, t))
-    idx_b2 = {}
-    for (l, c, r), t in b2.items():
-        idx_b2.setdefault(c, []).append((l, r, t))
-    while True:
-        todo = [x for x in transient if x not in seen]
-        if not todo:
-            break
-        for (cs, h) in todo:
-            seen.add((cs, h))
-            for (l, r, t) in list(idx_all.get(h, [])):
-                if (l, cs, r) not in rm:
-                    rm[(l, cs, r)] = t
-                    idx_all.setdefault(cs, []).append((l, r, t))
-                    n_tr += 1
-            for (l, r, t) in list(idx_b2.get(h, [])):
-                if (l, cs, r) not in b2:
-                    b2[(l, cs, r)] = t
-                    idx_b2.setdefault(cs, []).append((l, r, t))
-                    n_tr += 1
+    copy_transients()
+    n_tr = tr_count[0]
 
     # ── 7. 射影表 PL/PR ─────────────────────────────────────────────────────
     all_names = [state_name(s) for s in states]
@@ -625,7 +644,36 @@ def layouts_pure(nmax2=16, nmax3=16, slack=2, last_min=2):
                                 if any(sz[2 * j - 2] < sz[2 * j - 1] + slack for j in (1, 2, 3)):
                                     continue
                                 out.append((n, f'{a1}-{b1},{a2}-{b2},{a3}-{b3}', sz))
+    # p=4: n_i >= m_i + slack、n_i + m_i >= p - i(i=1: >= 3)、n <= nmax4
+    nmax4 = kw_nmax4[0]
+    for n in range(10, nmax4 + 1):
+        import itertools
+        # 区間長の列 [n1,m1,n2,m2,n3,m3,n4,m4,n5] を直接列挙(各 >= 1)
+        def rec(prefix, remain, k):
+            if k == 9:
+                if remain == 0:
+                    yield prefix
+                return
+            lo = 1
+            for v in range(lo, remain - (8 - k) + 1):
+                yield from rec(prefix + [v], remain - v, k + 1)
+        for sz in rec([], n, 0):
+            if sz[-1] < last_min:
+                continue
+            if any(sz[2 * j - 2] < sz[2 * j - 1] + slack or sz[2 * j - 2] + sz[2 * j - 1] < 4 - j
+                   for j in (1, 2, 3, 4)):
+                continue
+            pos = 1
+            spec = []
+            for k, v in enumerate(sz):
+                if k % 2 == 1:
+                    spec.append(f'{pos}-{pos + v - 1}' if v > 1 else f'{pos}')
+                pos += v
+            out.append((n, ','.join(spec), sz))
     return out
+
+
+kw_nmax4 = [0]
 
 
 def run_batch_pure(layouts):
@@ -649,7 +697,8 @@ def run_batch_pure(layouts):
     return res
 
 
-def sweep_pure(slack=2, last_min=2, nmax2=16, nmax3=16, show=10):
+def sweep_pure(slack=2, last_min=2, nmax2=16, nmax3=16, show=10, nmax4=0):
+    kw_nmax4[0] = nmax4
     lay = layouts_pure(nmax2=nmax2, nmax3=nmax3, slack=slack, last_min=last_min)
     res = run_batch_pure(lay)
     fails = []
