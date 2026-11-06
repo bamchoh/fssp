@@ -186,7 +186,7 @@ def add_a1():
     if 'FT2' not in names:
         states.append(f'{pad("FT2")}@101010,7090E0,others')
         names.append('FT2')
-    # TR: fast 継続信号の対岸横断状態。CB から右行き線 to_right に入った fast 信号を
+    # TR: 1/1 信号の継続信号の対岸横断状態。CB から右行き線 to_right に入った 1/1 信号を
     # 未起床セル上で 1/1 で運ぶ(起床前のセルだけが保持できる=起床・choreography
     # の前を必ず横断する)。壁で (TR,L,www) -> FT と 0 成本で折り返す。
     if 'TR' not in names:
@@ -222,7 +222,7 @@ def add_a1():
         # CB の次状態: 凍結表示 F(L) へ(凍結窓の開始は t_i1+1 ではなく t_i1 の
         # ままにする: CB は同じステップ内の carrier として働く)
         (('C', 'CB', 'W'), 'FL'),
-        # fast 継続信号の対岸横断(規則層):
+        # 1/1 信号の継続信号の対岸横断(規則層):
         #   - D_i 左端 pickup 経由で CB が対岸の左入力に現れると横断状態 TR に
         #     (未起床セルのみ。L と www の相手を横断する)
         #   - 配列右端(www と隣接)で 0 成本で解凍信号 FT に折り返す
@@ -272,7 +272,7 @@ def add_a1():
     # 境界Carrier CB: セルが CB を表示している間、その左(凍結側)のルールは
     # これを F(L)=FL と同じに扱う。(x, FL, r) -> y を (x, CB, r) に、
     # (l, c, FL) -> y を (l, c, CB) に複製(CB は FL と同じ機械として振る舞い、
-    # 加えて fast 信号の故障区間引き渡しを担う)。
+    # 加えて 1/1 信号の故障区間引き渡しを担う)。
     cb_copies = 0
     for key in list(rulemap.keys()):
         for slot, old_val in [(1, 'FL'), (2, 'FL')]:
@@ -480,7 +480,7 @@ def verify():
     """Lemma-1 バッテリ(履歴扱い、2026-11-06)。
 
     ②-A 時点の期待格子(凍結前 gold / 凍結中 F+直前表示 / 解凍後 gold を Δt ずらす)
-    で、②-B 以降の機構(journey 表示、担体 CB/cBT/TR、壁反射 T3)を知らないため
+    で、②-B 以降の機構(1/3 信号の表示、担体 CB/cBT/TR、壁反射 T3)を知らないため
     セル照合は全件 NG になる(発火時刻は 14/15 一致。dt=1 だけ本当に解凍しない=
     凍結 1 歩後の解凍という縮退入力)。保証には使わない。現行の保証は
     sweep_a1/a2/a3(定理の主張)と verify_a1(p=1 の構成照合)。MEMO「検証の現状」。
@@ -536,7 +536,7 @@ _gold2m_cache = {}
 
 
 def gold2m_cells(n2):
-    """I_{i+1} の choreography = 会合機構仕様の障害なし走行(journey 込み)。
+    """I_{i+1} の choreography = 会合機構仕様の障害なし走行(1/3 信号の込み)。
     golden_rows(会合ルール集合の障害なし走行)を n2 で実行して返す。"""
     if n2 not in _gold2m_cache:
         _gold2m_cache[n2] = [cells(row) for row in golden_rows(n2)]
@@ -575,21 +575,21 @@ def a1_expected(gold1_c, gold2_c, n1, m1, n2):
                         d = 'F' + v_x
                 else:
                     d = gold1_c[t - dt][x - 1]
-                # S33 journey(tau(x) = 3x−2 に 3 歩滞在)。会合が成立する配置では
-                # x <= c−1、不成立帯(c > n1)では journey 全長 x <= n1。
+                # S33 1/3 信号(tau(x) = 3x−2 に 3 歩滞在)。会合が成立する配置では
+                # x <= c−1、不成立帯(c > n1)では 1/3 信号 全長 x <= n1。
                 # 内部複合 = 小文字(choreography 仮想値を運ぶ)、
                 # 氷結複合 = 大文字(F_v 一定)。off = f−tau = 2n1+1−4x ≡ 奇数で
                 # 交差は off ∈ {1, 3} のみ(off 0/2 は構造的に起こらない)。
                 j_max = c_m - 1 if meet_ok else n1
                 if meet_ok and c_m <= x <= n1 and t < f_ + dt:
-                    # NG 会合放出(1/1 右走行)。会合セル(奇数 S)は journey の
+                    # NG 会合放出(1/1 右走行)。会合セル(奇数 S)は 1/3 信号 の
                     # 再点火を防ぐため 2 歩表示、それ以降(c より右)は 1 歩
                     if x == c_m and S % 2 == 1:
                         if t in (t_dep, t_dep + 1):
                             d = f'{v_x}NG'
                     elif t == t_dep + (x - c_m):
                         d = f'{v_x}NG'
-                # journey の表示は解凍時刻 f_+dt まで(off+dt ∈ [0,2] の交差セルは
+                # 1/3 信号 の表示は解凍時刻 f_+dt まで(off+dt ∈ [0,2] の交差セルは
                 # 解凍遷移で複合が切れて平常表示に復帰する=装置側もそう動く)
                 if x <= j_max and t < f_ + dt:
                         tau = 3 * x - 2
@@ -619,7 +619,7 @@ def a1_expected(gold1_c, gold2_c, n1, m1, n2):
                                 d = gold1_c[t][x - 1].strip().lower() + ph[t - tau]
                 # R2(1/1 左走行、表示は 1 歩)。会合は吸収するので(奇数 S では
                 # 会合セル自身、偶数 S ではその右隣まで)。会合不成立帯では R2 は
-                # I1 末端(=会合セル候補)の journey 保値復帰の瞬間に重なって吸収
+                # I1 末端(=会合セル候補)の 1/3 信号 保値復帰の瞬間に重なって吸収
                 # され、以後 carrier が発生しないのでどこにも表示されない。
                 # 滞在中に重なる 4x ∈ {2S, 2S+2} のセルでは carrier 表示が優先
                 # (R2 は表示されずに消える)
@@ -634,7 +634,7 @@ def a1_expected(gold1_c, gold2_c, n1, m1, n2):
             else:
                 x2 = x - (n1 + m1)
                 if n1 >= 2:
-                    # fast 継続信号の横断: TR 波は未起床セルを 1/1 で右へ
+                    # 1/1 信号の継続信号の横断: TR 波は未起床セルを 1/1 で右へ
                     # (CB@t_i1 → to_right pickup → 対岸提示 t_i1+m1+1 から)、
                     # 折り返し後の波は左へ 1/1 で戻る。通行の提示はセルがまだ
                     # アイドルの間だけ(起床後のシャトーには重ねられない=複合
@@ -715,7 +715,7 @@ def add_composite():
         rulemap[(x, 'TR', 'W')] = 'L'
     # 1c. 両端の衝突: 左入力に CB(区間の送出)が流れていて、右隣に左走行波
     #     (純 T3 / 複合 <Y>T3)が同時にいる場合、表示は横断 TR を優先する
-    #     (送出波の旅程が優先。T3 は次ステップで D_i の両端で消える)。
+    #     (送出波の1/3 信号の経路が優先。T3 は次ステップで D_i の両端で消える)。
     for y in ['T3'] + [s + 'T3' for s in ['A', 'B', 'C', 'L', 'M', 'Q', 'R']]:
         rulemap[('CB', 'L', y)] = 'TR'
     # 2. 未起床セル上の左走行波(wip の FT 直接流用を T3 に置換し、FT の
@@ -972,7 +972,7 @@ def add_meeting():
                     put((l, 'F' + v, w + 'NG'), 'F' + v)   # NG の左隣の保持
                     put((l, 'F' + v, w + 'R2'), 'F' + v)   # R2 の左隣の保持
 
-    # -- 標準の前線/ホールド族に複合を左隣に見るレーンを足す(journey 中のセルの
+    # -- 標準の前線/ホールド族に複合を左隣に見るレーンを足す(1/3 信号 中のセルの
     #    左隣が複合のときも前線は予定時刻どおり点火する)
     for l in [lo[h] + ph for h in held for ph in phn] +              [h + ph for h in held for ph in phn]:
         for c in held:
@@ -1003,7 +1003,7 @@ def add_meeting():
     for r in ['L', 'www']:
         put(('L', 'L', r), 'L')
     # 凍結起動 CB トリガ (X, L, W) -> CB と、その復帰 (X, CB, W) -> FL を
-    # journey 複合左隣にも複製する(n1 = 2 など短縮ケース: 細胞 n1 の左隣が
+    # 1/3 信号 複合左隣にも複製する(n1 = 2 など短縮ケース: 細胞 n1 の左隣が
     # S33 複合表示の瞬間に起動/復帰する)
     for (a, b, c), y in list(rulemap.items()):
         if c != 'W' or b not in ('L', 'CB'):
@@ -1013,7 +1013,7 @@ def add_meeting():
                 put((lo[h] + ph, b, c), y)
                 put((h + ph, b, c), y)
     # www-lane の残り(故障区間の左入力がwwwを提示するルールがまだある場合)を
-    # L-lane にミラーする。除外: 排出(www,M,L)と journey 複合ターゲット/レーン
+    # L-lane にミラーする。除外: 排出(www,M,L)と 1/3 信号 複合ターゲット/レーン
     for (a, b, c), y in list(rulemap.items()):
         if a != 'www':
             continue
@@ -1033,7 +1033,7 @@ def add_meeting():
             put((l, 'F' + v, 'TR'), v + 'R2')        # n1 右端での装填
     # c = n1(偶数 S)の会合放出: R2 の装填時刻 2S+1−n1 が t_dep と一致し、
     # R2 を会合セルの右隣(故障区間側)に進められないため、装填と同時に
-    # journey 位相(S3A、t_dep−1 = 3n1−4 = n1+2m1 の唯一の一致)を左隣に
+    # 1/3 信号の位相(S3A、t_dep−1 = 3n1−4 = n1+2m1 の唯一の一致)を左隣に
     # 見る放出キーが担う。n2 = 1 では t_dep−1 の左隣位相が S33 になるうえ
     # ポートを FT が奪うので發火しない(exp も放出を表示しない=一貫)。
     for v in held:
@@ -1084,7 +1084,7 @@ def add_meeting():
                     put((v + 'NG', c2, 'L'), 'M')
                     put((v + 'NG', c2, 'www'), 'F')
                 # 会合セル(奇数 S)の NG 2 歩表示: 細胞 c-1 の ph2 触発による
-                # journey 再点火を防ぐ(ph0 を左隣に持つ NG 表示は存在しない)
+                # 1/3 信号 再点火を防ぐ(ph0 を左隣に持つ NG 表示は存在しない)
                 for l in held:
                     put((l + 'S3A', w + 'NG', r), w + 'NG')
     # -- 解凍前線の複合左隣レーン(右走り波と解凍前線の 1/1 対面衝突)---------
@@ -1094,7 +1094,7 @@ def add_meeting():
     #   - NG 会合放出 {v}NG: NG と前線が同じ速度で逆向きに走るので
     #     2x == 2n1−2+dt−S(dt <= S)で正面衝突する。exp 設計は前線が勝つ
     #     (NG は x−1 で吸収、x は予定どおり復帰、I_{i+1} は注入代替で起動)。
-    #   - S33 journey 氷結複合 {X}ph: journey は会合セル c−1 で止まるので
+    #   - S33 1/3 信号 氷結複合 {X}ph: 1/3 信号 は会合セル c−1 で止まるので
     #     衝突は x <= c のときだけ(4x ∈ [2n1+dt+1, 2n1+dt+3])。
     # いずれも素の (F_l, F_w, r) 前線規則を複合左隣レーンに複製する
     # (複合の保値 v が素の左隣表示 F_v に対応する)。
@@ -1107,14 +1107,14 @@ def add_meeting():
                 put((v + 'NG', 'F' + w, r), t0)
                 for ph in phn:
                     put((v + ph, 'F' + w, r), t0)
-    # -- 解凍前線の journey 中央レーン(journey 滞在中に解凍時刻が来る交差)----
-    # journey(1/3)と解凍波(1/1 左走り)は逆向きに交差し、交差セル x の解凍
+    # -- 解凍前線の 1/3 信号 中央レーン(1/3 信号 滞在中に解凍時刻が来る交差)----
+    # 1/3 信号(1/3)と解凍波(1/1 左走り)は逆向きに交差し、交差セル x の解凍
     # 遷移では中央が氷結複合 {X}ph、右隣が既に平常表示(x+1 は先に解凍される)
     # になる。このキー (l, {X}ph, 平常 r) に素の (l, F_X, r) 規則を複製する
-    # (r = 平常値は journey 前進/復帰のキー r = 氷結複合と分離しているので
+    # (r = 平常値は 1/3 信号 前進/復帰のキー r = 氷結複合と分離しているので
     # 進行への影響はない。S3B 復帰 (l, {X}S3B, r) -> 'F'+X も同形状だが
     # 平常 r のときは交差しか起こらない)。交差セルの解凍は複合表示と重なる
-    # (exp も journey 位相を優先表示する)ので、セル自身は複合のまま位相を
+    # (exp も 1/3 信号の位相を優先表示する)ので、セル自身は複合のまま位相を
     # 進めつつ、遷移値は素の規則に従う。
     for X in held:
         for l in ['www'] + held + fv:
@@ -1124,13 +1124,13 @@ def add_meeting():
                     continue
                 for ph in phn:
                     put((l, X + ph, r), t0)
-    # -- journey 左隣レーン(交差セルの右隣が既に解凍済みのとき)--------------
-    # 交差点の右側では解凍が先に起こる(journey は 1/3 で遅い)ので、journey
+    # -- 1/3 信号 左隣レーン(交差セルの右隣が既に解凍済みのとき)--------------
+    # 交差点の右側では解凍が先に起こる(1/3 信号 は 1/3 で遅い)ので、1/3 信号
     # を表示中のセル x の右隣 x+1 は既に平常表示に復帰していることがある。
-    # このキー (journey 左隣, 平常中央, 平常右隣) に素の (F_X, w, r) 規則を
+    # このキー (1/3 信号 左隣, 平常中央, 平常右隣) に素の (F_X, w, r) 規則を
     # 複製する(中央が氷結複合のときは上のレーンが担当、進行規則との競合は
     # 平常右隣の分離で避ける)。下位複合(awake セル)は x+1 が解凍済みになる
-    # 前に journey が終わるので不要。
+    # 前に 1/3 信号 が終わるので不要。
     for X in held:
         for w in held:
             for r in held + ['FT2']:
@@ -1170,7 +1170,7 @@ def add_meeting():
                 if t0 is not None:
                     put((v + 'NG', c, r), t0)
     # -- 複合左隣・解凍後位相(FT2)の保持 --------------------------------------
-    # n1 が解凍済みで左隣に carrier/journey 複合が残る配置。素の
+    # n1 が解凍済みで左隣に carrier/1/3 信号 複合が残る配置。素の
     # (F{host}, c, FT2) 保持規則を複合左隣レーンに複製する。
     for l in ([h + 'NG' for h in held] + [h + 'R2' for h in held]):
         for c in held:
@@ -1183,7 +1183,7 @@ def add_meeting():
     # 2 歩表示の 1 歩目が会合セルの解凍遷移と重なるとき(2c_m = 2n1+dt−S−1)、
     # セルの解凍は複合表示のまま規則値に従う(off ∈ [0,2] の交差と同型)。
     # 右隣が既に平常表示(先に解凍)のキーに素の (l-アナログ, F_v, r) を複製。
-    # 左隣は journey 複合のこともある(会合直前の位相滞在中の重なり)。
+    # 左隣は 1/3 信号 複合のこともある(会合直前の位相滞在中の重なり)。
     for X in held:
         for l in (['www'] + held + fv
                   + [lo[h] + ph for h in held for ph in phn]
@@ -1199,8 +1199,8 @@ def add_meeting():
                 put((l, X + 'NG', r), t0)
     # thaw の FT-lane: 凍結複合表示中に解凍信号 FT が届いたら、その保値の
     # (X, F_v, FT) 準拠の thaw 遷移に落とし込む(cell2@n1 の thaw が STAY 直後
-    # に重なるケース)。複合左隣(NG/R2/journey)は保値対応の素のキー
-    # (F{host}, F_v, FT) を引く(journey 交差で n1 と同時刻の解凍になる配置)。
+    # に重なるケース)。複合左隣(NG/R2/1/3 信号)は保値対応の素のキー
+    # (F{host}, F_v, FT) を引く(1/3 信号 交差で n1 と同時刻の解凍になる配置)。
     def ft_l(l, v):
         if l.startswith('www'):
             return rulemap.get((l, 'F' + v, 'FT'))
@@ -1281,12 +1281,12 @@ def add_ab():
     fv = ['F' + h for h in held]   # FB(凍結 B)は状態 0 と同じ名前だが凍結値として実在
     lo = {h: h.lower() for h in held}
     phn = ('S33', 'S3A', 'S3B')
-    # journey(1/3 信号)の複合: 起床済みセル lo[X]+ph と凍結セル X+ph の両系。
-    # ②-D(A3 の NG 会合機構)では journey 滞在中のセルを他区間の帰還波
+    # 1/3 信号(1/3 信号)の複合: 起床済みセル lo[X]+ph と凍結セル X+ph の両系。
+    # ②-D(A3 の NG 会合機構)では 1/3 信号 滞在中のセルを他区間の帰還波
     # (T3/bR)が 1/1 で抜けるので、両系とも bw を 1 歩運ぶ複合が要る。
     journeys = ([lo[h] + ph for h in held for ph in phn]
                 + [h + ph for h in held for ph in phn])
-    uj = [h + ph for h in held for ph in phn]   # 凍結 journey(大文字ホスト)
+    uj = [h + ph for h in held for ph in phn]   # 凍結 1/3 信号(大文字ホスト)
     bws = ('T3', 'bR')
     fws = ('bF', 'aF')
     # ②-E 重ね合わせ: 前進対 aFbF(停留中の b に次段の a が追いつく)と、その
@@ -1431,7 +1431,7 @@ def add_ab():
         if bw == 'T3':
             if x == 'LT3':
                 return 'LbR'         # 起床複合 <L>T3 は純 T3 と別状態(鏡も別)
-            return plus(h, 'bR')     # journey 複合は None → 鍵ごとスキップ
+            return plus(h, 'bR')     # 1/3 信号 複合は None → 鍵ごとスキップ
         return x
 
     n2 = 0
@@ -1466,7 +1466,7 @@ def add_ab():
         put((l, c, r), pt, keep=False)
         n2b += n_add[0] - before
     # 純 bw レーンの鍵に L+bw 版が無ければ同じ目標で作る(例 (L,TR,T3)→T3 に対する
-    # (L,TR,LT3): A2 で 1 セル区間が連続し fast 継続 TR が複数本走ると、先頭の
+    # (L,TR,LT3): A2 で 1 セル区間が連続し 1/1 信号の継続 TR が複数本走ると、先頭の
     # 壁反射エコーが後続 TR と対面する。実測 A2 n=13 -f 3,5,7,9)。
     inv = {bw: 'L' + bw for bw in bws3}
     for (l, c, r), t in list(rulemap.items()):
@@ -1489,7 +1489,7 @@ def add_ab():
         if r != 'FT':
             continue
         before = n_add[0]
-        put((l, c, 'abX'), t)      # 中央は F_v のほか journey/R2/NG 付き凍結値も
+        put((l, c, 'abX'), t)      # 中央は F_v のほか 1/3 信号/R2/NG 付き凍結値も
         if c in fv:
             for bw in bws:
                 # 自身が運ぶ帰還波は左へ去るので解凍先に波は付けない
@@ -1497,16 +1497,16 @@ def add_ab():
                 put((l, c + bw, 'abX'), t)
         n3 += n_add[0] - before
 
-    # ── 3a. ②-E 1 セル区間の journey(会合機構を 1 セル区間にも適用する) ──
-    #    i>=2: 起動 NG で CB を表示した次ステップから凍結 journey LS33→LS3A→
+    # ── 3a. ②-E 1 セル区間の 1/3 信号(会合機構を 1 セル区間にも適用する) ──
+    #    i>=2: 起動 NG で CB を表示した次ステップから凍結 1/3 信号 LS33→LS3A→
     #          LS3B→FL(左入力は故障区間アイドル L、または 2 歩提示の 2 歩目 NG)。
-    #    i=1 : 将軍 M の右が故障区間(W)なら t=0 に凍結+journey MS33→…→FM。
+    #    i=1 : 将軍 M の右が故障区間(W)なら t=0 に凍結+1/3 信号 MS33→…→FM。
     #          D_i 左端は初回 pickup の M を担体として拾う(rust)。
     n3a = 0
     for key, tgt in [(('L', 'CB', 'W'), 'LS33'), (('NG', 'CB', 'W'), 'LS33'),
                      (('LNG', 'CB', 'W'), 'LS33'), (('www', 'M', 'W'), 'MS33'),
                      # A2: 1 セル区間に担体 CB が提示されたときの横断表示(右が故障区間 W)。
-                     # 折り返し(R2 装填)の判定表示で、fast 継続は次の D_i 左端が
+                     # 折り返し(R2 装填)の判定表示で、1/1 信号の継続は次の D_i 左端が
                      # cBT 表示を TR として拾う(rust)。表示後は L に戻る。
                      (('CB', 'L', 'W'), 'cBT'), (('L', 'cBT', 'W'), 'L')]:
         before = n_add[0]
@@ -1516,7 +1516,7 @@ def add_ab():
     # ── 3c. 起動 NG と帰還波の同時到着: 起動が勝つ。(NG|LNG|{X}NG, L, L)→M の
     #    右レーンを未起床セル上の波(T3/bR/T3bR と L ホスト複合)に広げ、目標に
     #    波を乗せる(M⊕bw)。add_collisions の (NG, L, T3族)→T3(通過)を上書き
-    #    する: D_i 左端の会合を A2 でも有効にしたことで、fast 波の T3 エコーが
+    #    する: D_i 左端の会合を A2 でも有効にしたことで、1/1 信号の T3 エコーが
     #    起動 NG と同時に I_{i+1} 左端に来る配置が現れた(実測 n=10 -f 3,6)。
     n3c = 0
     ng_lanes = ['NG', 'LNG'] + [h + 'NG' for h in held] + wks
@@ -1532,9 +1532,9 @@ def add_ab():
             t0 = rulemap.get((lng, 'L', 'L'))
         if t0 is None:
             continue
-        # fast 波の継続 TR が右隣にいる瞬間の起動(n_i=1 かつ m_i=1: TR が 1 歩先)
+        # 1/1 信号の継続 TR が右隣にいる瞬間の起動(n_i=1 かつ m_i=1: TR が 1 歩先)
         put((lng, 'L', 'TR'), t0)
-    # TR(右走 fast 継続)は未起床 L の右隣にいても透明: (l, L, TR) = (l, L, L)
+    # TR(右走 1/1 信号の継続)は未起床 L の右隣にいても透明: (l, L, TR) = (l, L, L)
     for (l, c, r), t in list(rulemap.items()):
         if c == 'L' and r == 'L' and l not in ('L', 'www'):
             before = n_add[0]
@@ -1567,7 +1567,7 @@ def add_ab():
         for r2 in held + ['abX', 'FT']:
             t2 = rulemap.get((l, base_c, r2))
             if t2 is None and r2 in ('abX', 'FT') and l in uj:
-                t2 = rulemap.get(('F' + l[0], base_c, r2))   # journey レーン = 凍結値
+                t2 = rulemap.get(('F' + l[0], base_c, r2))   # 1/3 信号 レーン = 凍結値
             if t2 is None:
                 continue
             ht2, bt2 = split(t2)
@@ -1593,8 +1593,8 @@ def add_ab():
     n3f = 0
     uj = [h + ph for h in held for ph in phn]
     r2set = [h + 'R2' for h in held]
-    # 3g. 凍結 journey セルの右隣が起床済み(前線が会合前に通過、または会合と解凍
-    #     の同時): journey を落として凍結値の解凍遷移に従う。
+    # 3g. 凍結 1/3 信号 セルの右隣が起床済み(前線が会合前に通過、または会合と解凍
+    #     の同時): 1/3 信号 を落として凍結値の解凍遷移に従う。
     for (l, c, r), t in list(rulemap.items()):
         if c not in fv or r not in held:
             continue
@@ -1603,7 +1603,7 @@ def add_ab():
             if jc not in lane_set:
                 continue
             before = n_add[0]
-            put((l, jc, r), t)                 # 前線が通過: journey を落とす
+            put((l, jc, r), t)                 # 前線が通過: 1/3 信号 を落とす
             put((l, jc, wk2[r]), t)            # 右隣で会合(R2 消費)しつつ解凍
             put((l, jc, wk[r]), t)             # 右隣の NG(右走)は無関係
             n3f += n_add[0] - before
@@ -1614,7 +1614,7 @@ def add_ab():
             before = n_add[0]
             put((l, c, 'FT2'), t)
             n3f += n_add[0] - before
-    # cBTFT = cBT ⊕ FT: cBT の効果(R2 装填 / 会合放出 / journey 続行)と解凍を合成
+    # cBTFT = cBT ⊕ FT: cBT の効果(R2 装填 / 会合放出 / 1/3 信号 続行)と解凍を合成
     for (l, c, r), t_cbt in list(rulemap.items()):
         if r != 'cBT':
             continue
@@ -1661,8 +1661,8 @@ def add_ab():
                     n3f += n_add[0] - before
 
     # ── 3b. ②-E D_i 左端の会合: 会合セルが左端セルに落ちる対では cBT(第 2
-    #    反射)が I_i 右端の journey 滞在中に提示される。R2 は装填せず(会合は
-    #    D_i 左端セルが行う)、journey はアイドル W を見たときと同じ進行をする。
+    #    反射)が I_i 右端の 1/3 信号 滞在中に提示される。R2 は装填せず(会合は
+    #    D_i 左端セルが行う)、1/3 信号 はアイドル W を見たときと同じ進行をする。
     n3b = 0
     uj = [h + ph for h in held for ph in phn]
     for (l, c, r), t in list(rulemap.items()):
@@ -1794,7 +1794,7 @@ def add_ab():
 
 
 def add_collisions():
-    # ②-B 衝突族: 対の担体(CB)横断と fast 波の壁反射帰り T3 が短い I_{i+1} 内で
+    # ②-B 衝突族: 対の担体(CB)横断と 1/1 信号の壁反射帰り T3 が短い I_{i+1} 内で
     # 重なるとき、担体の 1 歩 TR 表示((CB,L,L)→TR)を優先する(帰り T3 は
     # p>=2 では解凍に使わない=注入代替なので消えてよい)。欠落キーは
     # state0(FB) に落ちて choreography を壊すため必須。
@@ -1803,7 +1803,7 @@ def add_collisions():
     names = set(state_name(x).strip() for x in states)
     n_add = 0
     # 専用状態 cBT: 対の担体(CB)が D_i を横断して I_{i+1} 左端に提示されるとき
-    # の表示。素の TR だと D_i 右端 pickup の (F_l,F_v,TR)→{v}R2 変換が fast 波
+    # の表示。素の TR だと D_i 右端 pickup の (F_l,F_v,TR)→{v}R2 変換が 1/1 信号
     # ride の TR にも無差別発火して偽 R2 誕生(実測 (2,1,5,3,2) n=13)。
     # cBT だけを D_i 右端 pickup(own_wave ゲート)が拾うので区別できる。
     if 'cBT' not in names:
@@ -1831,7 +1831,7 @@ def add_collisions():
         if rulemap.get(key) != tgt:
             rulemap[key] = tgt
             n_add += 1
-    # fast 波の壁反射帰り T3 が対の担体の TR 表示と隣接した衝突:
+    # 1/1 信号の壁反射帰り T3 が対の担体の TR 表示と隣接した衝突:
     #  - T3 帰り波が asleep セルに入るとき左の担体表示(TR/NG 系)を左入力に
     #    持つキーが欠落 → state0(FB) 蔓延で I3 が死ぬ(実測 (3,1,3,1,4) n=12)。
     #    (l, L, T3族) -> T3 に担体系の l を追加(既存族は www/L+interior のみ)。
@@ -1877,15 +1877,15 @@ def add_collisions():
 def add_birth():
     # ②-B 誕生+衝突族(2026-10-17 exp_birth 実験の緑化結果を本線へ):
     #   1. 誕生キー (NG|LNG, M, L) -> mS33。故障区間中継の NG 2 歩提示(rust 側
-    #      ng_hold)の 2 歩目に左入力 LNG/NG を見て I_{i+1} の journey を誕生
+    #      ng_hold)の 2 歩目に左入力 LNG/NG を見て I_{i+1} の 1/3 信号 を誕生
     #      させる。素の (L,M,L) は I1 解凍後 ordinary choreography でも起こる
     #      ので絶対に置換しない。
-    #   2. T3 エコー × journey 複合の衝突族(fix-point):
+    #   2. T3 エコー × 1/3 信号 複合の衝突族(fix-point):
     #      - 左レーン <X+ph>T3: 左隣の偽装(同 target)
     #      - 中心    <X+ph>T3: 波が抜けた後の普通の進行(同 target)
     #      - 右レーン <r>T3:   吸収(target の T3 付き表示)。
     #        就寝セル(中心 L)は除外(純 T3 貫通の既存族を壊さない)
-    #      新状態 = lo[h]+ph+T3(21): journey 滞在中のセルが T3 を 1 歩運ぶ
+    #      新状態 = lo[h]+ph+T3(21): 1/3 信号 滞在中のセルが T3 を 1 歩運ぶ
     #      carrier(D_i 右端 pickup は rust 側で 6 文字小文字 T3 複合を認識する)。
     states, rules, pre, post = load(OUT_RULE)
     rulemap = parse_rules(rules)
@@ -2194,7 +2194,7 @@ def seg_expected(a3, sizes, golds):
         return d
 
     # セル番号(全体座標) → (区間種, 区間番号, セル番号)。全体座標 x のセルは
-    # t = x-1 に fast 継続(TR)の表示を持つ(将軍の 1/1 波が故障区間を 1/1 で渡って
+    # t = x-1 に 1/1 信号の継続(TR)の表示を持つ(将軍の 1/1 波が故障区間を 1/1 で渡って
     # 各 I_i (i>=2) を未起床のまま通過する。I_{p+1} の壁セル(x = n)では表示
     # なしで T3 に折り返す)。
     pos = []
@@ -2227,7 +2227,7 @@ def seg_expected(a3, sizes, golds):
                     f_ = t_st + n_seg - 1 + (n_seg - j)
                     dd = delta(idx)
                     if t < t_st:
-                        # fast 継続(TR): 未起床のまま t = x-1 で右向き 1/1 で通過
+                        # 1/1 信号の継続(TR): 未起床のまま t = x-1 で右向き 1/1 で通過
                         row.append('TR' if t == seg_x - 1 else 'L')
                     elif t < f_:
                         row.append(g[t - t_st][j - 1])
@@ -2241,7 +2241,7 @@ def seg_expected(a3, sizes, golds):
                     else:
                         row.append(g[t - dd - t_st][j - 1])
                 else:
-                    # 最終区間 I_{p+1}: fast 継続(TR)の通過と、壁反射の左走行波
+                    # 最終区間 I_{p+1}: 1/1 信号の継続(TR)の通過と、壁反射の左走行波
                     # T3(未起床セルでは純 T3、起床済みセルでは複合 <X>T3)の戻り。
                     # T2(起床)以降は自らの choreography、その間も T3 波の表示だけ
                     # が上に来る(a1_expected と同じ構造)。
@@ -2277,7 +2277,7 @@ def seg_expected(a3, sizes, golds):
 def verify_seg(a3_only=False):
     """A2/A3 の行単位照合(履歴扱い、2026-11-06)。
 
-    seg_expected は ②-B 以降の機構(journey 表示、担体 cBT、a/b 波 aF/bF/bR、LNG)
+    seg_expected は ②-B 以降の機構(1/3 信号の表示、担体 cBT、a/b 波 aF/bF/bR、LNG)
     を知らないためセル照合は全件 NG になる(発火時刻は 7/7 一致)。保証には使わない。
     構成照合が必要になったら verify_a1 の正規化を p>=2 に広げた射影オラクル
     (機構の重なりを剥がしてホストを素の Balzer の t_i ずらし・Δt_i 凍結と照合、
