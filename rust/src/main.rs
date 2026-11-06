@@ -2042,6 +2042,93 @@ fn validate_injections(injections: &[(Ctrl, usize, usize)], n: usize) -> Vec<(Ct
 
 const USAGE: &str = "usage: fssp -r <rulefile> [-s size] [-f faults] [--a3] [--inject ...] [--wallset ...] [-t steps] [--strict] [-d] [-c]";
 
+// ── 一括モード(--batch <file>) ─────────────────────────────────────────
+// 規則表を 1 回だけ読み、ファイルの各行 `n spec [a3]` を順に -f 実行して
+// 1 行ずつ結果を出す(スイープ用。1 配置 1 プロセスだと規則表の読込と 256 MB
+// の表の確保が毎回かかる)。出力形式:
+//   batch: n=<n> f=<spec> a3=<0|1> <SYNCED|NOT SYNCED> t=<t> injected=<k>
+// 配置の条件(n_i >= m_i 等)の検査は呼び出し側(freeze_tools.py)が行う。
+fn batch_run_layout(config: &Config, n: usize, spec: &str, a3: bool) -> Result<(bool, usize, usize), String> {
+    let fault = parse_fault_spec(spec, n)?;
+    let analysis = analyze_faults(&fault, n);
+    let mask = analysis.mask.clone();
+    let d1 = Some((analysis.segments[1].start, analysis.segments[1].end));
+    let pipes: Vec<(usize, usize)> = analysis
+        .segments
+        .iter()
+        .filter(|s| !s.intact)
+        .map(|s| (s.start, s.end))
+        .collect();
+    let p_cnt = pipes.len();
+    let mut ff = FaultField::new_ctx(&mask, config, true, p_cnt, d1, pipes, a3);
+    let (signals, _notes) = plan_a1_signals(&analysis, config, a3);
+    let cap = if a3 { (n << 1) - 2 + p_cnt } else { (n << 1) - 2 };
+    let mut current = first_line(n, config);
+    let mut next_cells = new_line(n, config);
+    let t = simulate_fault(
+        &mut current,
+        &mut next_cells,
+        &mut ff,
+        config,
+        cap,
+        &[],
+        &[],
+        &signals,
+        false,
+        false,
+    );
+    Ok((fired_intact(&current, &mask, config.firing), t, signals.len()))
+}
+
+fn run_batch(config: &Config, path: &str) {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("--batch: cannot read {}: {}", path, e);
+            std::process::exit(1);
+        }
+    };
+    let start = Instant::now();
+    let mut count = 0usize;
+    for (lineno, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() < 2 {
+            eprintln!("--batch: line {}: expect `n spec [a3]`: {}", lineno + 1, line);
+            continue;
+        }
+        let n = match parts[0].parse::<usize>() {
+            Ok(v) if v >= 2 => v,
+            _ => {
+                eprintln!("--batch: line {}: invalid n: {}", lineno + 1, parts[0]);
+                continue;
+            }
+        };
+        let spec = parts[1];
+        let a3 = parts.get(2).map_or(false, |v| *v == "a3" || *v == "--a3" || *v == "1");
+        match batch_run_layout(config, n, spec, a3) {
+            Ok((synced, t, injected)) => {
+                println!(
+                    "batch: n={} f={} a3={} {} t={} injected={}",
+                    n,
+                    spec,
+                    if a3 { 1 } else { 0 },
+                    if synced { "SYNCED" } else { "NOT SYNCED" },
+                    t,
+                    injected
+                );
+            }
+            Err(e) => println!("batch: n={} f={} a3={} ERROR {}", n, spec, if a3 { 1 } else { 0 }, e),
+        }
+        count += 1;
+    }
+    let end = start.elapsed();
+    println!("batch: {} layouts, time: {}.{:03}s", count, end.as_secs(), end.subsec_nanos() / 1_000_000);
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
 
@@ -2069,6 +2156,7 @@ fn main() {
     let mut rule_arg: Option<String> = None;
     let mut fault_arg: Option<String> = None;
     let mut steps_arg: Option<usize> = None;
+    let mut batch_arg: Option<String> = None;
     let mut injections: Vec<(Ctrl, usize, usize)> = vec![];
     let mut wallsets: Vec<(String, usize)> = vec![];
 
@@ -2089,6 +2177,10 @@ fn main() {
         "  --wallset <state@t>   時刻 t に右壁の提示状態を state に変える\n",
         "                        (論文モデルの「外部からの信号」。複数可)\n",
         "  -t, --steps <k>       故障あり実行のステップ上限(既定 2n-2+最大注入時刻)\n",
+        "  --batch <file>        一括モード: 各行 `n spec [a3]` を規則表 1 回読込で順に
+",
+        "                        -f 実行し `batch: n=.. f=.. a3=.. SYNCED t=.. injected=..` を出す
+",
         "  --strict              n_i>=m_i (A1/A2 条件) を満たす配置以外は実行しない\n",
         "  -d, --dump            1 ステップごとの途中経過を出力(ruby -d と同書式)\n",
         "                        (-f/--inject 時は R:/L:/F: 凍結行も追加)\n",
@@ -2113,7 +2205,7 @@ fn main() {
             }
             "--strict" => strict_mode = true,
             "--a3" => a3_mode = true,
-            "-r" | "--rule" | "-s" | "--size" | "-f" | "--fault" | "--inject" | "--wallset" | "-t" | "--steps" => {
+            "-r" | "--rule" | "-s" | "--size" | "-f" | "--fault" | "--inject" | "--wallset" | "-t" | "--steps" | "--batch" => {
                 i += 1;
                 let value = match args.get(i) {
                     Some(v) => v,
@@ -2126,6 +2218,8 @@ fn main() {
 
                 if opt == "-r" || opt == "--rule" {
                     rule_arg = Some(value.clone());
+                } else if opt == "--batch" {
+                    batch_arg = Some(value.clone());
                 } else if opt == "-s" || opt == "--size" {
                     match value.parse::<usize>() {
                         Ok(n) => size_arg = Some(n),
@@ -2240,6 +2334,11 @@ fn main() {
             "firing" => config.firing = i,
             _ => {}
         }
+    }
+
+    if let Some(path) = batch_arg.as_ref() {
+        run_batch(&config, path);
+        std::process::exit(0);
     }
 
     // 故障も制御メッセージ注入も壁信号もなければ通常シミュレーションへ。

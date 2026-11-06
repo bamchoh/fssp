@@ -16,10 +16,22 @@ OUT_RULE = os.path.join(ROOT, 'balzer-freeze-full.rul.txt')
 from freeze_tools import load, parse_rules, state_name, state_rows, stream_rows, cells, srow_cells  # noqa: E402
 
 
+_rule_cache = {}
+
+
+def _load_rules():
+    # 規則表(210 MB)の読込と解析は 1 プロセスに 1 回(sweep_a1 のスポット 9 配置で
+    # 毎回読み直すと 9 秒 × 9 になる)。ファイルの更新時刻が変わったら読み直す。
+    key = os.path.getmtime(OUT_RULE)
+    if _rule_cache.get('key') != key:
+        states, rules, pre, post = load(OUT_RULE)
+        _rule_cache.update(key=key, rulemap=parse_rules(rules),
+                           names=[state_name(s) for s in states])
+    return _rule_cache['rulemap'], _rule_cache['names']
+
+
 def check(n, spec, a3=False, verbose=True):
-    states, rules, pre, post = load(OUT_RULE)
-    rulemap = parse_rules(rules)
-    names = [state_name(s) for s in states]
+    rulemap, names = _load_rules()
 
     args = [BIN, '-r', OUT_RULE, '-s', str(n), '-d', '-t', str(2 * n + 60), '-f', spec]
     if a3:

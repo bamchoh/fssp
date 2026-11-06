@@ -20,6 +20,7 @@
 #     F(held 値)で待機する(カウントダウンは固定 dt 実験の図版で、任意 dt には
 #     有限状態で書けないため信号待機方式を採る)。
 import os
+import re
 import subprocess
 import sys
 
@@ -301,6 +302,31 @@ def add_a1():
 def run(binary, args):
     p = subprocess.run([binary] + args, capture_output=True, text=True, cwd=HERE)
     return p.stdout
+
+
+def run_batch(layouts):
+    """一括モード: layouts = [(n, spec, a3)] を 1 プロセス(規則表 1 回読込)で回し、
+    {(n, spec, a3): (synced, t, injected)} を返す。"""
+    import tempfile
+    fd, path = tempfile.mkstemp(prefix='fssp_batch_', suffix='.txt')
+    with os.fdopen(fd, 'w', encoding='utf-8') as f:
+        for (n, spec, a3) in layouts:
+            f.write(f'{n} {spec}{" a3" if a3 else ""}\n')
+    try:
+        out = run(BIN, ['-r', FULL_RULE, '--batch', path])
+    finally:
+        os.unlink(path)
+    res = {}
+    for line in out.splitlines():
+        m = re.match(r'batch: n=(\d+) f=(\S+) a3=([01]) (SYNCED|NOT SYNCED) t=(\d+) injected=(\d+)', line)
+        if m:
+            res[(int(m.group(1)), m.group(2), m.group(3) == '1')] = (
+                m.group(4) == 'SYNCED', int(m.group(5)), int(m.group(6)))
+    missing = [l for l in layouts if l not in res]
+    if missing:
+        raise RuntimeError(f'batch: {len(missing)} layouts without result, e.g. {missing[:3]}; '
+                           f'last output lines: {out.splitlines()[-3:]}')
+    return res
 
 
 def state_rows(text):
@@ -2076,28 +2102,9 @@ def discover_a1():
 # ── A2 (p>=2) の配列配置列挙スイープ ──────────────────────────────────
 def sweep_a2():
     # p=2: n=5..13 の全配置 (n_i >= m_i、区間は接触不許可=統合済み扱い)。
-    # p=3, p=4: 代表配置。期待 = SYNCED at 2n-2 (Theorem 3)。
-    import itertools
-
-    def a2_run(n, spec):
-        return run(BIN, ['-r', FULL_RULE, '-s', str(n), '-f', spec])
-
-    def check(n, spec, segs, fails):
-        fails[1] += 1
-        out = a2_run(n, spec)
-        p_ = spec.count(',') + 1
-        if (f'SYNCED (intact cells) at t={2 * n - 2}' not in out
-                or f'injected signals = {p_}' not in out):
-            fails[0] += 1
-            print(f'FAIL n={n} -f {spec} (n/m={segs})')
-            for line in out.splitlines():
-                if 'SYNCED' in line or 'NOT' in line:
-                    print('   ', line.strip())
-        # A3 表示の有無を確認する(失敗でなく記録のみ)
-        return 'constraint n_i+m_i>=p-i (A3): FAIL' in out
-
-    fails = [0, 0]
-    a3_fail = 0
+    # p=3, p=4: 代表配置。期待 = SYNCED at 2n-2 (Theorem 3)、注入 = p(各区間の FT)。
+    # 一括モード(--batch)で規則表を 1 回だけ読んで全配置を回す。
+    layouts = []   # (n, spec, segs 表示)
     for n in range(5, 14):
         for a1 in range(2, n - 1):
             for b1 in range(a1, n - 1):
@@ -2109,9 +2116,8 @@ def sweep_a2():
                         n2, m2 = a2 - b1 - 1, b2 - a2 + 1
                         if n1 < m1 or n2 < m2:
                             continue
-                        if check(n, f'{a1}-{b1},{a2}-{b2}',
-                                 f'{n1}/{m1},{n2}/{m2},{n - b2}', fails):
-                            a3_fail += 1
+                        layouts.append((n, f'{a1}-{b1},{a2}-{b2}',
+                                        f'{n1}/{m1},{n2}/{m2},{n - b2}'))
     for (n, a1, b1, a2, b2, a3, b3) in [
         (10, 4, 4, 6, 6, 8, 8),
         (11, 4, 4, 6, 7, 9, 9),
@@ -2126,16 +2132,30 @@ def sweep_a2():
         n3, m3 = a3 - b2 - 1, b3 - a3 + 1
         if min(n1 - m1, n2 - m2, n3 - m3) < 0 or a3 >= n:
             continue
-        check(n, f'{a1}-{b1},{a2}-{b2},{a3}-{b3}',
-              f'{n1}/{m1},{n2}/{m2},{n3}/{m3},{n - b3}', fails)
+        layouts.append((n, f'{a1}-{b1},{a2}-{b2},{a3}-{b3}',
+                        f'{n1}/{m1},{n2}/{m2},{n3}/{m3},{n - b3}'))
     # p=4 の代表配置
     for (n, segs, spec) in [
         (13, '3/1,1/1,1/1,2', '4-4,6-6,8-8'),
         (13, '2/1,1/1,1/1,1,2', '3-3,5-5,7-7,9-9'),
     ]:
-        check(n, spec, segs, fails)
-    print(f'A2 sweep: {fails[1]} layouts, {fails[0]} failures (A3-FAIL 内含 {a3_fail}, 発火は区別なし)')
-
+        layouts.append((n, spec, segs))
+    res = run_batch([(n, spec, False) for (n, spec, _) in layouts])
+    fails = 0
+    a3_fail = 0
+    for (n, spec, segs) in layouts:
+        p_ = spec.count(',') + 1
+        synced, t, inj = res[(n, spec, False)]
+        if not synced or t != 2 * n - 2 or inj != p_:
+            fails += 1
+            print(f'FAIL n={n} -f {spec} (n/m={segs}): '
+                  f'{"SYNCED" if synced else "NOT SYNCED"} t={t} injected={inj}')
+        # A3 条件 (n_i+m_i >= p-i) の不成立数を記録(失敗ではない)
+        sz = [int(x) for x in re.split('[/,]', segs)]
+        if any(sz[2 * j - 2] + sz[2 * j - 1] < p_ - j for j in range(1, p_ + 1)):
+            a3_fail += 1
+    print(f'A2 sweep: {len(layouts)} layouts, {fails} failures '
+          f'(SYNCED at 2n-2 and p injections; A3 条件不成立 {a3_fail} 配置を含む)')
 
 # ── A2/A3 の区間一般での検証(スケジュール式に対応した期待配置) ──────────
 # sizes = [n1, m1, n2, m2, ..., n_{p+1}] (I と D の交互)。a3 フラグで
@@ -2295,9 +2315,8 @@ def verify_seg(a3_only=False):
 
 def sweep_a3():
     # A3 条件 (n_i >= m_i かつ n_i + m_i >= p - i) を満たす p>=1 配置の列挙。
-    # 期待 = SYNCED at 2n-2+p。
-    import itertools
-    total = fails = 0
+    # 期待 = SYNCED at 2n-2+p、注入 0。一括モード(--batch)で回す。
+    layouts = []   # (n, spec, sizes)
     for n in range(5, 15):
         for a1 in range(2, n - 1):
             for b1 in range(a1, n - 1):
@@ -2309,23 +2328,12 @@ def sweep_a3():
                         sizes = [s[1] - s[0] + 1 for s in segs]
                         if sizes[0] < 1 or sizes[-1] < 1:
                             continue
-                        ok_c = True
                         p = 2
-                        for j in (1, 2):  # D_j は sizes の 2j、その左の I は 2j-2
-                            n_j, m_j = sizes[2 * j - 2], sizes[2 * j - 1]
-                            # A3 条件: n_i >= m_i かつ n_i + m_i >= p - i
-                            if n_j < m_j or n_j + m_j < p - j:
-                                ok_c = False
-                        if not ok_c:
+                        if any(sizes[2 * j - 2] < sizes[2 * j - 1]
+                               or sizes[2 * j - 2] + sizes[2 * j - 1] < p - j
+                               for j in (1, 2)):
                             continue
-                        total += 1
-                        out = run(BIN, [
-                            '-r', FULL_RULE, '-s', str(n),
-                            '-f', f'{a1}-{b1},{a2}-{b2}', '--a3'])
-                        if (f'SYNCED (intact cells) at t={2 * n - 2 + 2}' not in out
-                                or 'injected signals = 0' not in out):
-                            fails += 1
-                            print(f'FAIL n={n} -f {a1}-{b1},{a2}-{b2} (sizes={sizes})')
+                        layouts.append((n, f'{a1}-{b1},{a2}-{b2}', sizes))
     # p=3: 全配置列挙 (n=8..14, n_i >= m_i で A3 条件は p<=3 では自明)。
     for n in range(8, 15):
         for a1 in range(2, n - 3):
@@ -2346,24 +2354,26 @@ def sweep_a3():
                                 if any(sizes[2 * j - 2] < sizes[2 * j - 1]
                                        for j in (1, 2, 3)):
                                     continue
-                                total += 1
                                 spec3 = (f'{a1}-{b1},{a2}-{b2},'
                                          + (f'{a3b}' if a3b == b3 else f'{a3b}-{b3}'))
-                                out = run(BIN, [
-                                    '-r', FULL_RULE, '-s', str(n),
-                                    '-f', spec3, '--a3'])
-                                if (f'SYNCED (intact cells) at t={2 * n - 2 + 3}' not in out
-                                        or 'injected signals = 0' not in out):
-                                    fails += 1
-                                    print(f'FAIL p3 n={n} -f {spec3} (sizes={sizes})')
-    print(f'A3 sweep: {total} layouts, {fails} failures (p=2 + p=3; SYNCED at 2n-2+p and 0 injections)')
-
+                                layouts.append((n, spec3, sizes))
+    res = run_batch([(n, spec, True) for (n, spec, _) in layouts])
+    fails = 0
+    for (n, spec, sizes) in layouts:
+        p = (len(sizes) - 1) // 2
+        synced, t, inj = res[(n, spec, True)]
+        if not synced or t != 2 * n - 2 + p or inj != 0:
+            fails += 1
+            print(f'FAIL n={n} -f {spec} (sizes={sizes}): '
+                  f'{"SYNCED" if synced else "NOT SYNCED"} t={t} injected={inj}')
+    print(f'A3 sweep: {len(layouts)} layouts, {fails} failures (p=2 + p=3; SYNCED at 2n-2+p and 0 injections)')
 
 # ── A1 (p=1) の全配置スイープ ─────────────────────────────────────────
 def sweep_a1():
-    # p=1: n=5..16 の全配置 (n1 >= m1)。期待 = SYNCED at 2n-2。
+    # p=1: n=5..16 の全配置 (n1 >= m1)。期待 = SYNCED at 2n-2、注入 0。
     # 大きい n のスポット + 未定義規則キーの包含確認(check_keys)。
-    total = fails = 0
+    # 全配置は一括モード(--batch)で回す。
+    layouts = []
     for n in range(5, 17):
         for n1 in range(1, n - 1):
             for m1 in range(1, n - n1):
@@ -2371,26 +2381,31 @@ def sweep_a1():
                 if n1 < m1 or n2 < 1:
                     continue
                 spec = f'{n1+1}' if m1 == 1 else f'{n1+1}-{n1+m1}'
-                out = run(BIN, ['-r', FULL_RULE, '-s', str(n), '-f', spec])
-                total += 1
-                if (f'SYNCED (intact cells) at t={2 * n - 2}' not in out
-                        or 'injected signals = 0' not in out):
-                    fails += 1
-                    print(f'FAIL n={n} -f {spec} (n1={n1} m1={m1} n2={n2})')
-    print(f'A1 sweep n=5..16: {total} layouts, {fails} failures (SYNCED at 2n-2 and 0 injections)')
-    import check_keys  # 遅延(import 順の循環を避ける)
+                layouts.append((n, spec, (n1, m1, n2)))
     spots = [(22, 4, 3), (30, 4, 3), (30, 7, 5), (40, 10, 8), (50, 20, 10),
              (50, 5, 1), (44, 3, 2), (36, 9, 9), (50, 45, 2)]
-    for (n, n1, m1) in spots:
-        spec = f'{n1+1}' if m1 == 1 else f'{n1+1}-{n1+m1}'
-        out = run(BIN, ['-r', FULL_RULE, '-s', str(n), '-f', spec])
-        ok = f'SYNCED (intact cells) at t={2 * n - 2}' in out
+    spot_layouts = [(n, f'{n1+1}' if m1 == 1 else f'{n1+1}-{n1+m1}', (n1, m1, n - n1 - m1))
+                    for (n, n1, m1) in spots]
+    res = run_batch([(n, spec, False) for (n, spec, _) in layouts + spot_layouts])
+    fails = 0
+    for (n, spec, (n1, m1, n2)) in layouts:
+        synced, t, inj = res[(n, spec, False)]
+        if not synced or t != 2 * n - 2 or inj != 0:
+            fails += 1
+            print(f'FAIL n={n} -f {spec} (n1={n1} m1={m1} n2={n2}): '
+                  f'{"SYNCED" if synced else "NOT SYNCED"} t={t} injected={inj}')
+    print(f'A1 sweep n=5..16: {len(layouts)} layouts, {fails} failures (SYNCED at 2n-2 and 0 injections)')
+    import check_keys  # 遅延(import 順の循環を避ける)
+    und_count = 0
+    for (n, spec, (n1, m1, n2)) in spot_layouts:
+        synced, t, inj = res[(n, spec, False)]
+        ok = synced and t == 2 * n - 2 and inj == 0
         und = check_keys.check(n, spec, verbose=False)
+        if und:
+            und_count += 1
         if not ok or und:
-            print(f'FAIL n={n} n1={n1} m1={m1}: sync={ok}, undefined={len(und)}')
-    print(f'A1 spots: {len(spots)} layouts, '
-          f'{sum(1 for (n, n1, m1) in spots if check_keys.check(n, f"{n1+1}" if m1 == 1 else f"{n1+1}-{n1+m1}", verbose=False))} with undefined keys')
-
+            print(f'FAIL n={n} n1={n1} m1={m1}: sync={ok} t={t} injected={inj}, undefined={len(und)}')
+    print(f'A1 spots: {len(spots)} layouts, {und_count} with undefined keys')
 
 if __name__ == '__main__':
     cmd = sys.argv[1] if len(sys.argv) > 1 else 'verify'
