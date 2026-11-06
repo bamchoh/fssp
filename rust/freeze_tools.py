@@ -451,6 +451,14 @@ def discover():
 
 
 def verify():
+    """Lemma-1 バッテリ(履歴扱い、2026-11-06)。
+
+    ②-A 時点の期待格子(凍結前 gold / 凍結中 F+直前表示 / 解凍後 gold を Δt ずらす)
+    で、②-B 以降の機構(journey 表示、担体 CB/cBT/TR、壁反射 T3)を知らないため
+    セル照合は全件 NG になる(発火時刻は 14/15 一致。dt=1 だけ本当に解凍しない=
+    凍結 1 歩後の解凍という縮退入力)。保証には使わない。現行の保証は
+    sweep_a1/a2/a3(定理の主張)と verify_a1(p=1 の構成照合)。MEMO「検証の現状」。
+    """
     ok = True
     for (n, t1, dt) in CASES:
         gold = golden_rows(n)
@@ -2247,6 +2255,14 @@ def seg_expected(a3, sizes, golds):
 
 
 def verify_seg(a3_only=False):
+    """A2/A3 の行単位照合(履歴扱い、2026-11-06)。
+
+    seg_expected は ②-B 以降の機構(journey 表示、担体 cBT、a/b 波 aF/bF/bR、LNG)
+    を知らないためセル照合は全件 NG になる(発火時刻は 7/7 一致)。保証には使わない。
+    構成照合が必要になったら verify_a1 の正規化を p>=2 に広げた射影オラクル
+    (機構の重なりを剥がしてホストを素の Balzer の t_i ずらし・Δt_i 凍結と照合、
+    故障セルは無視)に置き換える。MEMO「検証の現状」。
+    """
     ok = True
     for (a3, n, spec, sizes) in seg_mode_cases():
         if a3_only and not a3:
