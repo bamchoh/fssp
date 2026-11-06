@@ -670,12 +670,21 @@ fn report_faults(analysis: &FaultAnalysis) -> (Vec<String>, Vec<String>) {
 //   - 故障セルは遷移規則を使わず、双方向の 1/1 パイプライン(§2.3.2, Fig.5)。
 //     左から来た値はそのまま右へ、右から来た値はそのまま左へ(方向保存)。
 //   - 隣接セルの故障/正常は故障フラグ(mask)で判定する。www は配列の外側の壁のみ。
+// 用語(2026-11-06 改名。旧称: 管路 / 入口 / 遠位口):
+//   - 故障区間 D_i = I_i と I_{i+1} に挟まれた故障セルの並び。信号だけを運ぶ
+//     2 本の一方向線(右行き線 to_right、左行き線 to_left)として扱う。
+//   - D_i 左端 = D_i の左端セル(左隣が I_i の右端)。右行き線はここで I_i の
+//     担体(CB/NG)を拾い、左行き線はここで I_i の右端に FT / a/b 波を提示する。
+//   - D_i 右端 = D_i の右端セル(右隣が I_{i+1} の左端)。右行き線はここで
+//     I_{i+1} に提示し、左行き線はここで I_{i+1} 側の帰還波(T3/bR/cBT)を拾う。
+//   - 始端 / 終端 = 流れる向きに対して信号が乗る側 / 提示される側の端
+//     (右行き線: 左端→右端、左行き線: 右端→左端)。注入の説明にだけ使う。
 // 信号層(A1 モード = -f 指定かつ --inject/--wallset なし):
-//   - 管路は規則層で実装した凍結波/解凍波(balzer-freeze.rul.txt の F 状態)への
+//   - 故障区間は規則層で実装した凍結波/解凍波(balzer-freeze.rul.txt の F 状態)への
 //     起動信号だけを運ぶ。信号は A1/A2 の式(t_i, t_i1, Δt_i)から区間構造より
-//     事前計算し、管路の遠位口から注入して 1/1 で流れ、近位口のルール入力に
+//     事前計算し、故障区間の始端(信号が乗る側の端)から注入して 1/1 で流れ、終端のルール入力に
 //     ちょうど 1 ステップだけ提示される(壁の役割と同じ提示機構)。
-//   - 管路が信号を運んでいないときは www を提示する(区間の境界は、区間内の
+//   - 故障区間が信号を運んでいないときは www を提示する(区間の境界は、区間内の
 //     同期にとって外側の壁と同じ振る舞いをする)。
 //   - 凍結そのもの、解凍の波、区間内の同期はすべて遷移規則で動く。
 // オラクルモード(--inject/--wallset あり):
@@ -687,10 +696,10 @@ enum Ctrl {
     Thaw,
 }
 
-// A1/A2 のスケジュールに従い管路へ注入される信号。
-// time = 管路の流入口セルに値が現れる時刻、cell = 流入口セル(故障セル)。
-// to_left = true なら R→L 管路(to_left、右口から注入)、false なら L→R(to_right、
-// 左口から注入)。信号は管路を 1/1 で流れ、近位口で 1 ステップだけ提示されて消える。
+// A1/A2 のスケジュールに従い故障区間へ注入される信号。
+// time = 故障区間の始端セルに値が現れる時刻、cell = 始端セル(故障セル)。
+// to_left = true なら左行き線(to_left、D_i 右端から注入)、false なら右行き線(to_right、
+// D_i 左端から注入)。信号は故障区間を 1/1 で流れ、終端で 1 ステップだけ提示されて消える。
 struct PlannedSignal {
     time: usize,
     cell: usize,
@@ -711,8 +720,8 @@ fn find_state_index(config: &Config, name: &str) -> Option<St> {
 //  I_i の凍結起動:     t_i1 = t_i + n_i - 1 (i ≤ p、A1 本文の t1 = n1 - 1 と一致)
 //  I_i の凍結期間:     Δt_i = 2 m_i + 2 Σ_{j=i+1..p} (n_j + m_j) + 2 n_{p+1}
 //  I_i の解凍起動:     t_i2 = t_i1 + Δt_i
-// 信号は対応する故障区間 D の管路に流し込まれ、提示時刻(起動時刻の 1 ステップ前)
-// に近位口のルール入力へ現れる。
+// 信号は対応する故障区間 D に流し込まれ、提示時刻(起動時刻の 1 ステップ前)
+// に終端のルール入力へ現れる。
 fn plan_a1_signals(analysis: &FaultAnalysis, config: &Config, a3: bool) -> (Vec<PlannedSignal>, Vec<String>) {
     let mut plan = vec![];
     let mut notes = vec![];
@@ -721,7 +730,7 @@ fn plan_a1_signals(analysis: &FaultAnalysis, config: &Config, a3: bool) -> (Vec<
     let ft = find_state_index(config, "FT");
     let ng = find_state_index(config, "NG");
     // A3 ②-C: ルールファイルに会合状態 abX があれば解凍は a/b 会合機構
-    // (規則層+管路機械)で担うので、A3 モードの FT 注入を行わない。
+    // (規則層+故障セル処理(rust 側))で担うので、A3 モードの FT 注入を行わない。
     let a3_ab = a3 && find_state_index(config, "abX").is_some();
 
     if fs.is_none() || ft.is_none() || ng.is_none() {
@@ -768,16 +777,16 @@ fn plan_a1_signals(analysis: &FaultAnalysis, config: &Config, a3: bool) -> (Vec<
                 .sum::<usize>()
             + 2 * n_last
             + if a3 { p - i + 1 } else { 0 };
-        // 解凍信号 FT: p=1 では注入しない(壁反射の T3 波の遠位口 pickup が
+        // 解凍信号 FT: p=1 では注入しない(壁反射の T3 波の D_i 右端 pickup が
         // 純 FT に変換して同じ時刻に提示する=FT 注入を撤廃した p=1 経路)。
-        // p>=2 では区間識別つき往復波が未実装のため、各管路への隔離配信(注入)
+        // p>=2 では区間識別つき往復波が未実装のため、各 D_i への隔離配信(注入)
         // で解凍提示する(論文に対する既知の置換装置の記録: SPEC「実装の記録」)。
         let t_1i = t_i(i) + n_i - 1;
         let t_2i = t_1i + delta;
-        // p=1 の解凍は fast 波の壁反射 T3 を D1 遠位口が FT に変換する(局所)。
-        // n_1=1 でも将軍の初期表示を管路入口が担体として拾うので同じ経路。
+        // p=1 の解凍は fast 波の壁反射 T3 を D1 右端が FT に変換する(局所)。
+        // n_1=1 でも将軍の初期表示を D_i 左端が担体として拾うので同じ経路。
         let local_thaw = p == 1;
-        // ②-E: I1 が 1 セル(将軍自身が右端)でも、管路入口が初回 pickup の M を
+        // ②-E: I1 が 1 セル(将軍自身が右端)でも、D_i 左端が初回 pickup の M を
         // 担体として拾い(fast 信号の原点)、(www,M,W)→MS33 で凍結+journey を
         // 始めるので FS/FT 注入は不要。
         let a3_local = a3_ab;
@@ -814,7 +823,7 @@ fn plan_a1_signals(analysis: &FaultAnalysis, config: &Config, a3: bool) -> (Vec<
             // ((NG,L,W)→CB、局所)なので FS も FT も注入しない。I1 が 1 セル
             // (将軍自身が右端、t_11=0)だけは FS/FT 注入を残す(縮退)。
             // ②-F: FS 注入は全モードで撤廃。1 セル区間は i>=2 なら (NG,L,W)→CB、
-            // I1 なら (www,M,W)→MS33(将軍の初期表示を管路入口が担体として拾う)。
+            // I1 なら (www,M,W)→MS33(将軍の初期表示を D_i 左端が担体として拾う)。
             let _ = fs;
             if !local_thaw && !a3_local {
                 plan.push(PlannedSignal {
@@ -825,14 +834,14 @@ fn plan_a1_signals(analysis: &FaultAnalysis, config: &Config, a3: bool) -> (Vec<
                 });
             }
         }
-        // 次の正常区間 I_{i+1} の将軍起動信号(管路の L→R パイプラインを流れて
-        // I_{i+1} の左端セルの左入力に提示される)。p=1 では全配置が会合機械
+        // 次の正常区間 I_{i+1} の将軍起動信号(右行き線を流れて
+        // I_{i+1} の左端セルの左入力に提示される)。p=1 では全配置が会合機構
         // (CA 局所)で扱えるとは限らない(dt <= S では放出波が解凍前線に吸収
         // されるので注入での代替を残す=後段課題)。
         // p>=2 でも I_i 対 D_i 対 I_{i+1} は p=1 と同じ対面幾何なので、
-        // 同じ会合機械(規則層の規則は時刻に依存しない=そのまま再利用)で
+        // 同じ会合機構(規則層の規則は時刻に依存しない=そのまま再利用)で
         // 処理できる。配信可能条件は p=1 のもののペア版:
-        //   - 会合セル c_m <= n_i(管路への装填は S3A+TR 同時放出キーで c=n1 でも可)
+        //   - 会合セル c_m <= n_i(故障区間への装填は S3A+TR 同時放出キーで c=n1 でも可)
         //   - dt > S_i で起動波が解凍前線に吸収されない
         //   - n_{i+1} != 1(n_{i+1}=1 では壁反射が R2 装填のポート提示を奪う)
         if let Some(ng) = ng {
@@ -840,18 +849,18 @@ fn plan_a1_signals(analysis: &FaultAnalysis, config: &Config, a3: bool) -> (Vec<
             let c_meet = if s1 % 2 == 0 { s1 / 2 + 1 } else { (s1 + 3) / 2 };
             let n_next = sizes[2 * i];
             // A3 (Thm.4) は時刻系に +(i−1) のオフセットを足すため会合放出の
-            // 配信時刻が 1 ステップ早くなる。会合機械は A1/A2 の時刻系なの
+            // 配信時刻が 1 ステップ早くなる。会合機構は A1/A2 の時刻系なの
             // で、A3 モードでは注入のまま(残課題: A3 対応の放出キー)。
-            // ②-B per-pipe 化済み: CB/NG 入口 pickup と to_left 遠位口の TR
-            // 折り返しは各管路で行う(rust 側 own_wave ゲート)。対 (I_i,I_{i+1})
-            // が配信可能なら I_i の会合機械(自身の journey は add_birth の
+            // ②-B per-pipe 化済み: CB/NG D_i 左端 pickup と D_i 右端(to_left)の TR
+            // 折り返しは各 D_i で行う(rust 側 own_wave ゲート)。対 (I_i,I_{i+1})
+            // が配信可能なら I_i の会合機構(自身の journey は add_birth の
             // 誕生+next_pair_deliverable アームで走る)が放出 NG で I_{i+1} を
             // 起動する。A3 は時刻系がずれるので注入のまま。
-            // A3 ②-D: 会合機械は A3 でも同じ幾何で動く。+1 は放出 NG が管路入口の
-            // 1 歩遅延線(b 波の前進停留と同じ機械)を通ることで出る(論文: 「各正常
+            // A3 ②-D: 会合機構は A3 でも同じ幾何で動く。+1 は放出 NG が D_i 左端の
+            // 1 歩遅延線(b 波の前進停留と同じ仕組み)を通ることで出る(論文: 「各正常
             // 区間で起動が 1 歩遅れる」。機構は論文に指定なし)。
-            // ②-E: 会合セルが管路入口(c_meet = n_i+1、m_i ∈ {n_i−1, n_i})に落ちる
-            // 対は、管路入口の機械が会合(journey 位相 × cBT 到着)を行い NG を
+            // ②-E: 会合セルが D_i 左端(c_meet = n_i+1、m_i ∈ {n_i−1, n_i})に落ちる
+            // 対は、D_i 左端セルが会合(journey 位相 × cBT 到着)を行い NG を
             // 生成する。c_meet <= n_i の条件は不要になり、n_i >= 2(journey が
             // 存在する)だけ残る。
             let _ = c_meet;
@@ -859,7 +868,7 @@ fn plan_a1_signals(analysis: &FaultAnalysis, config: &Config, a3: bool) -> (Vec<
             // ので n_i / n_{i+1} の縮退条件は不要。残るのは dt <= S(放出 NG と
             // 解凍前線の正面衝突)だけ。
             // ②-F: 放出 NG は解凍前線と交差して起床済みセル上を xNG で走るので
-            // dt <= S の条件も不要。A3 は全対が会合機械で配信される。
+            // dt <= S の条件も不要。A3 は全対が会合機構で配信される。
             let pair_deliverable = true;
             let s1_last = sizes[sizes.len() - 1];
             let deliverable = 2 * m_i + 2 * s1_last > s1;
@@ -888,42 +897,42 @@ struct FaultField {
     to_right_nex: Vec<St>,
     to_left_nex: Vec<St>,
     ctrl_nex: Vec<Ctrl>,
-    // A1 モード: 管路は信号だけを運び、アイドル時は境界マーカーを提示する
+    // A1 モード: 故障区間は信号だけを運び、アイドル時は境界マーカーを提示する
     signal_only: bool,
     // 信号状態の番号。ルールファイルに無ければ None(www にフォールバック)
-    w_state: Option<St>,  // R→L 管路のアイドル提示(解凍前の境界マーカー)
+    w_state: Option<St>,  // 左行き線のアイドル提示(解凍前の境界マーカー)
     ft_state: Option<St>, // 解凍信号
     ft2_state: Option<St>, // 解凍後のアイドル提示(σ 線上の壁反射と凍結起動の区別)
-    cb_state: Option<St>,  // 境界 Carrier(fast 信号の管路 entry pickup 対象)
-    cbt_state: Option<St>, // 担体横断の専用表示(R2 装填の遠位口 pickup 対象)
+    cb_state: Option<St>,  // 境界 Carrier(fast 信号の故障区間 entry pickup 対象)
+    cbt_state: Option<St>, // 担体横断の専用表示(R2 装填の D_i 右端 pickup 対象)
     tr_state: Option<St>,  // fast 継続の対岸横断状態
-    a3: bool,              // A3 時刻系(会合機械の規則を凍結する)
+    a3: bool,              // A3 時刻系(会合機構の規則を凍結する)
     // 壁反射の左走行波 T3 と、起床済みセル上の複合 carrier <X>T3(chateau+signal)。
-    // 遠位口 pickup の対象。pickup した複合は純 FT に変換して管路に乗せる。
+    // D_i 右端 pickup の対象。pickup した複合は純 FT に変換して故障区間に乗せる。
     t3_carriers: Vec<St>,
     // NG 会合放出の保値付き carrier {X}NG(名称が 3 文字で NG で終わる)。
-    // 会合セルから 1/1 右走行して I1 右端に現れたとき、to_right 入口 pickup
-    // (入口セル d1.0 = D1 左端だけ)がこれを管路に乗せる。
+    // 会合セルから 1/1 右走行して I1 右端に現れたとき、D_i 左端(to_right) pickup
+    // (左端セル d1.0 = D1 左端だけ)がこれを故障区間に乗せる。
     ng_carriers: Vec<St>,
     // NG 状態(注入始発の素値)。2 歩提示の判定に使う。
     ng_state: Option<St>,
-    // NG 起動中継の 2 歩提示(遠位口で 1 歩保持)。
+    // NG 起動中継の 2 歩提示(D_i 右端で 1 歩保持)。
     ng_hold: Vec<St>,
     ng_hold_nex: Vec<St>,
-    // 故障区間数。to_left 管路への FT 変換 pickup は p=1 のときだけ有効
+    // 故障区間数。左行き線(to_left)への FT 変換 pickup は p=1 のときだけ有効
     // (p>=2 では各区間の解凍は注入 FT で提示され、壁反射波を区間に拾わせると
-    //  他区間の波が誤って解凍を起動するため、波は管路の遠位口で消える)
+    //  他区間の波が誤って解凍を起動するため、波は故障区間の右端で消える)
     p: usize,
-    // D1 の(入口セル, 遠位口セル)。to_left の FT 変換 pickup は p=1 のとき
+    // D1 の(左端セル, 右端セル)。to_left の FT 変換 pickup は p=1 のとき
     // d1.1 で有効(②-C までの制約)。
-    // None = 旧挙動(全管路で pickup、テスト用)。
+    // None = 旧挙動(全故障区間で pickup、テスト用)。
     d1: Option<(usize, usize)>,
-    // 全故障管路の(入口セル, 遠位口セル)リスト。②-B: CB/NG の入口 pickup と
-    // to_left 遠位口の TR 折り返し(R2 装填)は D1 に限らず各管路で行う。
+    // 全故障区間の(左端セル, 右端セル)リスト。②-B: CB/NG の D_i 左端 pickup と
+    // D_i 右端(to_left)の TR 折り返し(R2 装填)は D1 に限らず各 D_i で行う。
     pipes: Vec<(usize, usize)>,
-    // 管路ごとに「最後に L→R 入口 pickup した値が自身の担体(CB)か」。
-    // I_i の担体(凍結 Carrier)はこの管路に入ったばかり=R2 折り返しの源。
-    // fast 波(I1 担体)は横断で TR として入口に現れるので false=折り返し禁止。
+    // D_i ごとに「最後に 右行き線の左端 pickup した値が自身の担体(CB)か」。
+    // I_i の担体(凍結 Carrier)はこの故障区間に入ったばかり=R2 折り返しの源。
+    // fast 波(I1 担体)は横断で TR として D_i 左端に現れるので false=折り返し禁止。
     // これがないと fast 波の折り返しが各 I_i の凍結起動時刻をずらして
     // (C,L,W)→FL の W スロットを壊す。
     own_wave: Vec<bool>,
@@ -931,12 +940,12 @@ struct FaultField {
     // A3 ②-C: CB 入庫の 1 ステップ後に流す 2 便目(a 波 aF)。one-shot。
     ab_hold: Vec<St>,
     ab_hold_nex: Vec<St>,
-    // 管路口の 1 歩遅延線: 入口 to_right(b 前進の停留)、入口 to_left(a 帰還の停留)
+    // D_i 両端の 1 歩遅延線: D_i 左端 to_right(b 前進の停留)、D_i 左端 to_left(a 帰還の停留)
     r_buf: Vec<St>,
     r_buf_nex: Vec<St>,
     l_buf: Vec<St>,
     l_buf_nex: Vec<St>,
-    // 会合済み入口(abX 提示後、後続の a 脚を呑む)
+    // 会合済みの左端(abX 提示後、後続の a 脚を呑む)
     ab_consume: Vec<bool>,
     ab_consume_nex: Vec<bool>,
     // 帰還 carrier 族(bR で終わる状態名)、前進/帰還の射影(状態番号→成分)
@@ -950,27 +959,27 @@ struct FaultField {
     br_state: Option<St>,
     wt3_state: Option<St>,
     wbr_state: Option<St>,
-    // ②-D: 遠位口の折り返し cBT と帰還波の同時提示(管路の提示値の複合)
+    // ②-D: D_i 右端の折り返し cBT と帰還波の同時提示(故障区間の提示値の複合)
     cbt_t3_state: Option<St>,
     cbt_br_state: Option<St>,
     // ②-G: 折り返し cBT と解凍 FT の同時提示(A1、I_{p+1} が 1 セル)
     cbt_ft_state: Option<St>,
-    // ②-H: 自管路の a 波の管内マーカー(aFo。提示時に aF へ射影)と、遠位口が
+    // ②-H: 自分の D_i の a 波の D_i 内マーカー(aFo。提示時に aF へ射影)と、D_i 右端が
     // 「前ステップに自分の担体(CB / aFo)を提示した」1 歩記憶。折り返しの判定は
     // これで行う(sticky な own_wave では m_i >= n_i のとき前段の a 波の表示を
     // 自分の a と誤認して偽の折り返しが起きた: 実測 A3 n=9 -f 2,6-8)。
     afo_state: Option<St>,
     own_pres: Vec<bool>,
     own_pres_nex: Vec<bool>,
-    // ②-E: 凍結 journey の位相集合(複合 ⊕bw 込み)。管路入口の会合判定に使う。
+    // ②-E: 凍結 journey の位相集合(複合 ⊕bw 込み)。 D_i 左端の会合判定に使う。
     j_s33_frozen: Vec<St>,
     j_s3a_frozen: Vec<St>,
-    // ②-E: 管路がまだ何も運んでいない(初期状態)。初回 pickup で左隣が M
+    // ②-E: 故障区間がまだ何も運んでいない(初期状態)。初回 pickup で左隣が M
     // (= 1 セル I1 の将軍の初期表示)なら担体として拾う(fast 信号の原点)。
     pipe_virgin: Vec<bool>,
     m_state: Option<St>,
     // ②-E 重ね合わせ: 前進対 aF⊕bF(名前が aFbF で始まる)、帰還対 T3⊕bR
-    // (名前が T3bR で終わる)、管路提示の cBT⊕T3⊕bR。
+    // (名前が T3bR で終わる)、D_i 提示の cBT⊕T3⊕bR。
     is_abf: Vec<bool>,
     is_t3br: Vec<bool>,
     abf_state: Option<St>,
@@ -990,26 +999,26 @@ impl FaultField {
         self.ng_carriers.contains(&v) || self.ng_state == Some(v)
     }
 
-    // 遠位口 c から右の区間が I_{i+1} として、対 (I_{i+1}, I_{i+2}) の会合
-    // 機械が配信可能か(plan_a1_signals の pair_deliverable と同じ条件)。
-    // 配信可能な機械だけが自分の journey(S33 誕生)を持つ意味がある:
-    //   - 次の管路 D_{i+1} が存在する(i+1 <= p)。無ければ I_{i+1} は最後の
+    // D_i 右端 c から右の区間が I_{i+1} として、対 (I_{i+1}, I_{i+2}) の会合
+    // 対が配信可能か(plan_a1_signals の pair_deliverable と同じ条件)。
+    // 配信可能な対だけが自分の journey(S33 誕生)を持つ意味がある:
+    //   - 次の故障区間 D_{i+1} が存在する(i+1 <= p)。無ければ I_{i+1} は最後の
     //     区間 I_{p+1} で、2n-2 でそのまま発火するので journey 不要。
     //   - c_meet(i+1) <= n_{i+1}、dt_{i+1} > S_{i+1}、n_{i+2} != 1。
     // これらが揃わない配置では journey の誕生が発火時刻と衝突して
     // choreography を壊す(a1m バッテリと A2 スイープで発見)ので、
     // 起動中継の 2 歩提示をアームしない=誕生キー (NG|LNG,M,L) が生じない。
-    // 遠位口 c の管路 D_i とその左右の区間で対 (I_i, I_{i+1}) が配信可能か
+    // D_i 右端 c の D_i とその左右の区間で対 (I_i, I_{i+1}) が配信可能か
     // (plan_a1_signals の pair_deliverable と同じ条件)。配信できない対の
-    // 管路では自身の担体(CB)を通さない(放出も注入で代替。担体の 1 歩 TR が
+    // 故障区間では自身の担体(CB)を通さない(放出も注入で代替。担体の 1 歩 TR が
     // fast 波の壁反射 T3 と衝突し、欠落キー=FB で choreography を壊すため)。
-    // n_i(左区間)、m_i(この管路)、n_{i+1}(右区間)を mask から数える。
+    // n_i(左区間)、m_i(この故障区間)、n_{i+1}(右区間)を mask から数える。
     fn this_pair_deliverable(&self, c: usize) -> bool {
         let n = self.mask.len() - 2;
         if c == 0 || c > n {
             return false;
         }
-        // m_i は管路リストから取る(D1 の左には別の管路がないので
+        // m_i は故障区間リストから取る(D1 の左には別の故障区間がないので
         // 左方向の故障走で数えると配列端まで延びて壊れる)。
         let m_i = self
             .pipes
@@ -1069,8 +1078,8 @@ impl FaultField {
         true
     }
 
-        // c がどれか管路の入口セル(左隣=正常)か。右隣が正常(m=1 管路)でも
-    // 入口なので mask[c+1] は見ない。
+        // c がどれか故障区間の左端セル(左隣=正常)か。右隣が正常(m=1 の D_i)でも
+    // D_i 左端なので mask[c+1] は見ない。
     fn is_pipe_entry(&self, c: usize) -> bool {
         c >= 1 && self.intact(c - 1)
     }
@@ -1080,8 +1089,8 @@ impl FaultField {
             || self.cbt_t3br_state == Some(v) || self.cbt_ft_state == Some(v)
     }
 
-    // 遠位口 c が対岸の表示 d_next から cBT(第 2 反射の折り返し)を取り込む
-    // ステップか。A3: 自管路の a 波(fast 継続)表示、非 A3: cBT 表示。
+    // D_i 右端 c が対岸の表示 d_next から cBT(第 2 反射の折り返し)を取り込む
+    // ステップか。A3: 自分の D_i の a 波(fast 継続)表示、非 A3: cBT 表示。
     fn fold_at_distal(&self, c: usize, d_next: St) -> bool {
         if !self.this_pair_deliverable(c) || !self.own_pres[c] {
             return false;
@@ -1090,19 +1099,19 @@ impl FaultField {
             self.fw_proj[d_next as usize].is_some() && self.fw_proj[d_next as usize] == self.af_state
         } else {
             // cBT 表示、または I_{i+1} が 1 セルで担体が即時壁反射した T3 表示
-            // (own_wave は折り返しで落ちるので、自管路の担体の反射に限られる)
+            // (own_wave は折り返しで落ちるので、自分の D_i の担体の反射に限られる)
             Some(d_next) == self.cbt_state || Some(d_next) == self.t3_state
         }
     }
 
 
-    // c の属する管路のインデックス(入口セルから)。無ければ None。
+    // c の属する故障区間のインデックス(左端セルから)。無ければ None。
     fn pipe_index_of_entry(&self, c: usize) -> Option<usize> {
         self.pipes.iter().position(|&(s, _)| s == c)
     }
 
-    // 遠位口 c の属する管路の own_wave フラグ(最後の L→R 入口値が CB)。
-    // フラグは入口セルのインデックスに保存してある。
+    // D_i 右端 c の属する故障区間の own_wave フラグ(最後の L→R D_i 左端値が CB)。
+    // フラグは左端セルのインデックスに保存してある。
     fn own_wave_of_distal(&self, c: usize) -> bool {
         self.pipes
             .iter()
@@ -1110,11 +1119,11 @@ impl FaultField {
             .any(|&(s, _)| self.own_wave[s])
     }
 
-    // 対岸の正常セルの表示 d が管路に乗せる解凍信号(FT)かどうか。
+    // 対岸の正常セルの表示 d が故障区間に乗せる解凍信号(FT)かどうか。
     // 純 FT に加え、壁反射の左走行波 T3 と複合 carrier <X>T3 も対象:
-    // 複合は chateau 部分をセル自身に残すので、管路には純 FT を載せる。
+    // 複合は chateau 部分をセル自身に残すので、故障区間には純 FT を載せる。
     // TR は I2 左端の fast 継続表示: R2 装填(会合の 1/1 左走行反射信号)の
-    // 源流として素の TR 状態のまま to_left 管路に乗せる(近位口のルール入力に
+    // 源流として素の TR 状態のまま 左行き線(to_left)に乗せる(終端のルール入力に
     // 1 歩だけ提示され、I1 右端の (F_l, F_v, TR) -> {v}R2 で凍結領域を左走行)。
     fn pickup_thaw(&self, d: St) -> Option<St> {
         if Some(d) == self.ft_state || self.t3_carriers.contains(&d) {
@@ -1250,7 +1259,7 @@ impl FaultField {
             .map(|(i, _)| i as St)
             .collect();
         // 状態名の射影(A3 ②-C): 前進成分(bF/aF/CB/TR/cBT とその複合の接頭部)、
-        // 帰還成分(T3/bR で終わる名前)。管路の口は「管に入る成分」だけを運ぶ。
+        // 帰還成分(T3/bR で終わる名前)。 D_i の両端は「線に入る成分」だけを運ぶ。
         let fw_proj: Vec<Option<St>> = config
             .states
             .iter()
@@ -1270,7 +1279,7 @@ impl FaultField {
                     "TR" => tr_state,
                     "cBT" => cbt_state,
                     // ②-D/②-F: 会合放出の担体 {X}NG / xNG(と帰還波との複合)は純 NG に
-                    // 射影する(管路は信号だけを運ぶ。I_{i+1} 左端の起動鍵は純 NG)。
+                    // 射影する(故障区間は信号だけを運ぶ。I_{i+1} 左端の起動鍵は純 NG)。
                     _ => ng_base.iter().find(|(nm, _)| nm == base).and_then(|_| find_state_index(config, "NG")),
                 }
             })
@@ -1291,14 +1300,14 @@ impl FaultField {
                 }
             })
             .collect();
-        // 信号層のアイドル値。R→L 管路(I_i 右端セルの右入力)は境界マーカー W
+        // 信号層のアイドル値。左行き線(I_i 右端セルの右入力)は境界マーカー W
         // を提示する(www だと凍結起動と素の壁反射 (C,L,www)->M が区別できず衝突)。
         // 解凍信号 FT が口を通過した後は FT2(解凍後位相)に切り替わる。
-        // L→R 管路(次の区間 I_{i+1} 左端セルの左入力)は www(将軍の boundary
+        // 右行き線(次の区間 I_{i+1} 左端セルの左入力)は www(将軍の boundary
         // 規則 (www,M,*) がそのまま働く)。ルールファイルに W がなければ www。
-        // L→R 管路のアイドル提示: 素の www(将軍の boundary 規則 (www,M,*) が
+        // 右行き線のアイドル提示: 素の www(将軍の boundary 規則 (www,M,*) が
         // そのまま働く=以前の挙動)から L に変更。S33 排出 (www,M,L)->複合 が
-        // I_{i+1} 左端の発射後 M 表示でも誤発火するため、管路からの左入力は
+        // I_{i+1} 左端の発射後 M 表示でも誤発火するため、故障区間からの左入力は
         // 細胞 1 と区別できる L を提示する((L,M,r) ミラー規則を生成する)。
         let idle_to_right = if signal_only { config.soldier as St } else { config.external as St };
         let idle_to_left = if signal_only { w_state.unwrap_or(config.external as St) } else { config.soldier as St };
@@ -1374,15 +1383,15 @@ impl FaultField {
     //     ダンプの直前にも呼び、提示値 abX をダンプに反映する。
     fn premerge(&mut self, current: &[St]) {
         let n = self.mask.len() - 2;
-        // 1b) A3 ②-C 会合: 管路入口に a 帰還(T3 族)が到着した(遅延線に入った)
+        // 1b) A3 ②-C 会合: D_i 左端に a 帰還(T3 族)が到着した(遅延線に入った)
         //     ステップに、その上流(1 セル右)に b 帰還(bR 族)が続いていれば自対の
-        //     管路である(a は b の 1 歩前を走る。他の管路では間隔 >= 2)。
+        //     故障区間である(a は b の 1 歩前を走る。他の D_j では間隔 >= 2)。
         //     このとき停留せず提示値を会合状態 abX に置き換え、後続の b を呑む。
         //     m>=2 の上流 = ストリーム、m=1 は対岸の正常セルの表示(複合 carrier)。
         if self.a3 && self.signal_only && self.abx_state.is_some() {
             for c in 1..=n {
                 if !self.mask[c] || c <= 1 || self.mask[c - 1] {
-                    continue; // 入口(左隣が正常)だけが提示先になる
+                    continue; // D_i 左端(左隣が正常)だけが提示先になる
                 }
                 if self.l_buf[c] == 0 || !self.t3_carriers.contains(&self.l_buf[c]) {
                     continue;
@@ -1436,11 +1445,11 @@ impl FaultField {
             if self.mask[c] {
                 // 故障セル: 左に由来する値を保ったまま右へ渡す準備をする。
                 // 左隣の値は、左隣が故障ならその L→R ストリーム、正常ならそのセルの
-                // 現在状態。A1 モードでは管路は信号だけを運ぶ: 流入口(隣が正常の
+                // 現在状態。A1 モードでは故障区間は信号だけを運ぶ: 始端(隣が正常の
                 // 場所)では計画された注入信号を取り込み、それ以外は www を充填する
                 // (管からセル状態の生値を取り込まない)。
                 let w = self.w_state;
-                // 入口 pickup(0 成本: 境界セルの表示の時刻の次ステップに管路の
+                // D_i 左端 pickup(0 成本: 境界セルの表示の時刻の次ステップに故障区間の
                 // 先頭セルに入る = 論文の「反射の到着吸収」)。carrier(CB = 凍結
                 // 起動 Carrier / TR = fast 継続の対岸横断)の表示のときだけ
                 // 取り込み、それ以外はアイドル www。
@@ -1448,13 +1457,13 @@ impl FaultField {
                     self.to_right[c - 1]
                 } else if self.signal_only {
                     let d = current[c - 1];
-                    // 入口 pickup(②-B per-pipe 化): CB(I_i の凍結起動担体)と NG
-                    // (会合放出 {X}NG)はどの管路の入口でも取り込む。
+                    // D_i 左端 pickup(②-B per-pipe 化): CB(I_i の凍結起動担体)と NG
+                    // (会合放出 {X}NG)はどの故障区間の左端でも取り込む。
                     //   - TR(fast 波=I1 担体の縦断)はどこでも取り込む(=縦断の継続)。
                     //   - A3 ②-C: 表示の前進成分(bF/aF、複合 bF⊕bw/aF⊕bw/CB⊕bw の
-                    //     前進部分)を射影して取り込む(管路は「管に入る信号」だけを運ぶ)。
-                    // this_pair_deliverable には遠位口セルを渡す(m=1 のときは
-                    // 入口=遠位口)。
+                    //     前進部分)を射影して取り込む(故障区間は「線に入る信号」だけを運ぶ)。
+                    // this_pair_deliverable には右端セルを渡す(m=1 のときは
+                    // 左端=右端)。
                     let distal = self
                         .pipes
                         .iter()
@@ -1475,12 +1484,12 @@ impl FaultField {
                         // 担体 {X}NG / xNG は純 NG に射影して運ぶ
                         self.ng_state.unwrap_or(d)
                     } else if self.a3 && self.is_abf[d as usize] && self.abf_state.is_some() {
-                        // 前進対 aF⊕bF の表示: 両成分を取り込む(入口機械が分解する)
+                        // 前進対 aF⊕bF の表示: 両成分を取り込む(左端セルが分解する)
                         self.abf_state.unwrap()
                     } else if self.a3 && f.is_some() && (f != self.cb_state || cb_ok) {
                         f.unwrap()
                     } else {
-                        // アイドル充填: L→R 管路は L を提示する((www,M,L) との
+                        // アイドル充填: 右行き線は L を提示する((www,M,L) との
                         // 誤発火回避、new_ctx の idle_to_right と同じ理屈)
                         if self.signal_only { config.soldier as St } else { config.external as St }
                     }
@@ -1489,7 +1498,7 @@ impl FaultField {
                 };
                 let idle_r = if self.signal_only { config.soldier as St } else { config.external as St };
                 // ②-E: 初回 pickup で左隣が将軍 M(1 セル I1、t=0)なら担体 CB と
-                // して拾う(将軍の初期表示 = fast 信号の原点。管路の初期状態による
+                // して拾う(将軍の初期表示 = fast 信号の原点。故障区間の初期状態による
                 // 局所判定)。
                 let trv = if self.signal_only && self.is_pipe_entry(c)
                     && self.pipe_virgin[c] && trv == idle_r
@@ -1503,12 +1512,12 @@ impl FaultField {
                 if self.is_pipe_entry(c) && trv != idle_r {
                     self.pipe_virgin[c] = false;
                 }
-                // ②-E 管路入口の会合: 会合セルが入口セル(c_meet = n_i+1)になる対
-                // (m_i ∈ {n_i−1, n_i})では、規則層の会合鍵と同じ 2 形を入口が担う:
+                // ②-E D_i 左端の会合: 会合セルが左端セル(c_meet = n_i+1)になる対
+                // (m_i ∈ {n_i−1, n_i})では、規則層の会合鍵と同じ 2 形を D_i 左端が担う:
                 //   偶数 S: 左隣(I_i 右端)が S3A 位相で cBT(R2 装填)が到着する瞬間
                 //   奇数 S: 左隣が S33 位相で cBT が提示中の瞬間
                 // どちらも次ステップに NG を to_right に生成する(時刻は規則層の
-                // 会合放出と同じ 2n_i+m_i)。A3 では入口の遅延線で +1 される。
+                // 会合放出と同じ 2n_i+m_i)。A3 では左端の遅延線で +1 される。
                 let trv = if self.signal_only && self.is_pipe_entry(c) && trv == idle_r
                     && self.ng_state.is_some()
                 {
@@ -1524,7 +1533,7 @@ impl FaultField {
                 } else {
                     trv
                 };
-                // own_wave: このセルが管路の入口なら、自身の機械の担体(CB)の
+                // own_wave: このセルが故障区間の左端なら、自身の D_i の担体(CB)の
                 // 入庫を記録(sticky)。
                 if self.is_pipe_entry(c) {
                     self.own_wave_nex[c] = if trv == self.cb_state.unwrap_or(255) {
@@ -1537,7 +1546,7 @@ impl FaultField {
                         self.own_wave[c]
                     };
                 }
-                // NG 起動中継の 2 歩提示(②-B、A2 の対機械)。
+                // NG 起動中継の 2 歩提示(②-B、A2 の対の会合処理)。
                 if self.ng_hold[c] != 0 {
                     self.ng_hold_nex[c] = 0;
                     self.to_right_nex[c] = self.ng_hold[c];
@@ -1548,15 +1557,15 @@ impl FaultField {
                     let a3_entry = self.a3 && self.signal_only && self.is_pipe_entry(c)
                         && self.bf_state.is_some();
                     if a3_entry {
-                        // A3 ②-C 入口機械:
+                        // A3 ②-C 左端セル:
                         //   (i) CB 入庫 = 対 (a,b) の誕生。ストリームには a 波(aF、
                         //       先発)を書き、次ステップに b 波(bF、1 歩後ろ)を書く
                         //       (one-shot ab_hold)。b が前進停留で遅れ、a が帰還
                         //       停留で遅れるので、間隔は常に >= 1(重ね合わせ無し)
-                        //       で、自対の管路入口でだけ「a 到着時に b が 1 歩後ろ」。
+                        //       で、自対の D_i 左端でだけ「a 到着時に b が 1 歩後ろ」。
                         //   (ii) 表示 bF の入庫(=他区間の b が横断してきた)は 1 歩
                         //        遅延線で停留させる(論文: b は I_{i+1}..I_p の左端で
-                        //        1 歩停留。誕生管路 D_i では停留しない=局所判定)。
+                        //        1 歩停留。誕生区間 D_i では停留しない=局所判定)。
                         //        後続の列(aF)も遅延線を通るので順序は保たれる。
                         //   (iii) ②-E: 停留は b(と NG)だけ。停留中の b と到着した a は
                         //        同じステップに重ねて提示する(aF⊕bF、論文: b が停留中の
@@ -1569,8 +1578,8 @@ impl FaultField {
                             self.ab_hold_nex[c] = 0;
                             (Some(self.ab_hold[c]), None)
                         } else if Some(trv) == self.cb_state {
-                            // 誕生: a 波(aF)が先発、b 波(bF)が 1 歩後ろ。管内では
-                            // 自管路マーカー aFo で運ぶ(提示時に aF へ射影)
+                            // 誕生: a 波(aF)が先発、b 波(bF)が 1 歩後ろ。 D_i 内では
+                            // 自分の D_i マーカー aFo で運ぶ(提示時に aF へ射影)
                             self.ab_hold_nex[c] = bf;
                             (Some(self.afo_state.unwrap_or(af)), None)
                         } else {
@@ -1586,7 +1595,7 @@ impl FaultField {
                             }
                         };
                         // 会合セルの NG 2 歩表示の 2 便目: 次の対(I_{i+1}, I_{i+2})に
-                        // 会合機械が不要(I_{i+1} が最終区間)なら呑む(journey を
+                        // 会合機構が不要(I_{i+1} が最終区間)なら呑む(journey を
                         // 生まないため。非 A3 の「2 便目を呑む」と同じ判定を遅延線で)。
                         let stall = match stall {
                             Some(v) if self.is_ng_launch(v)
@@ -1618,7 +1627,7 @@ impl FaultField {
                         self.r_buf_nex[c] = 0;
                         self.ab_hold_nex[c] = 0;
                     }
-                    // 2 歩提示のアームは「提示値」で判定する(A3 の入口遅延線では
+                    // 2 歩提示のアームは「提示値」で判定する(A3 の左端の遅延線では
                     // 到着 trv と提示値が 1 歩ずれる。非 A3 では同じ値)。
                     let presented = self.to_right_nex[c];
                     if self.intact(c + 1)
@@ -1631,19 +1640,19 @@ impl FaultField {
                         && self.is_ng_launch(self.to_right[c])
                         && self.is_ng_launch(trv)
                     {
-                        // 配信可能でない対の機械への会合放出: 2 便目を呑む
+                        // 配信可能でない対への会合放出: 2 便目を呑む
                         self.to_right_nex[c] = idle_r;
                     }
                 }
                 // ── R→L ストリーム ──────────────────────────────────────
-                // 遠位口 pickup(対岸の正常セルの表示から取り込む)。
-                //   A3: 帰還成分(T3/bR、複合の帰還部分)を射影し、管路提示状態
+                // D_i 右端 pickup(対岸の正常セルの表示から取り込む)。
+                //   A3: 帰還成分(T3/bR、複合の帰還部分)を射影し、D_i 提示状態
                 //       WT3/WbR(境界マーカー W 付き)として運ぶ。
                 //   p=1(非 A3): FT 変換(解凍)と TR (R2 装填の源流)。
-                //   p>=2(非 A3): TR のみ、own_wave の管路だけ。
+                //   p>=2(非 A3): TR のみ、own_wave の故障区間だけ。
                 let distal_pick = |d_next: St| -> Option<St> {
                     if self.a3 && self.signal_only {
-                        // ②-D: 自管路の a 波(=fast 継続)が I_{i+1} 左端に表示された
+                        // ②-D: 自分の D_i の a 波(=fast 継続)が I_{i+1} 左端に表示された
                         // ステップに cBT を折り返す(R2 装填。A2 の cBT 表示 pickup と
                         // 同時刻)。own_wave は折り返し後に落とす(one-shot)。
                         let fold = self.fold_at_distal(c, d_next);
@@ -1662,7 +1671,7 @@ impl FaultField {
                             (true, Some(w)) => Some(w),
                         }
                     } else {
-                        // 非 A3: 折り返し(自管路の担体の cBT/即時反射 T3 表示)と、
+                        // 非 A3: 折り返し(自分の D_i の担体の cBT/即時反射 T3 表示)と、
                         // p=1 の解凍変換(T3 族 → FT)。同時なら複合 cBTFT。
                         let fold = self.fold_at_distal(c, d_next);
                         let base = if self.p == 1 && self.d1.map_or(true, |(_, e)| c == e) {
@@ -1680,7 +1689,7 @@ impl FaultField {
                     }
                 };
                 self.to_left_nex[c] = if self.signal_only && c > 1 && !self.mask[c - 1] {
-                    // 入口(左隣が正常セル)。入来信号を提示に優先させる。
+                    // D_i 左端(左隣が正常セル)。入来信号を提示に優先させる。
                     let mut inbound: Option<St> = if self.mask[c + 1] {
                         let v = self.to_left[c + 1];
                         if v == config.external as St { None } else { Some(v) }
@@ -1702,7 +1711,7 @@ impl FaultField {
                             Some(v) => (false, None, Some(v)),
                             None => (false, None, None),
                         };
-                        // 会合済み入口: 後続の b 脚(bR 族)を呑む(消費)
+                        // 会合済みの左端: 後続の b 脚(bR 族)を呑む(消費)
                         if self.ab_consume[c] {
                             if wave_b.map_or(false, |v| self.br_carriers.contains(&v)) {
                                 wave_b = None;
@@ -1713,7 +1722,7 @@ impl FaultField {
                         } else {
                             self.ab_consume_nex[c] = false;
                         }
-                        // a 帰還の停留 = 入口の 1 歩遅延線(論文: a は帰還時に各
+                        // a 帰還の停留 = D_i 左端の 1 歩遅延線(論文: a は帰還時に各
                         // 故障区間の左端で 1 歩停留)。b は止まらない。
                         let out_a: Option<St> = if self.l_buf[c] != 0 { Some(self.l_buf[c]) } else { None };
                         self.l_buf_nex[c] = wave_a.unwrap_or(0);
@@ -1742,7 +1751,7 @@ impl FaultField {
                     match inbound {
                         Some(v) => v,
                         None => {
-                            // 左口のアイドル。解凍信号(FT / 会合 abX)の提示ステップの
+                            // D_i 左端(左行き線)のアイドル。解凍信号(FT / 会合 abX)の提示ステップの
                             // 直後にアイドルを FT2(解凍後位相)へ切り替え、以後保つ。
                             let cur = self.to_left[c];
                             if (self.ft2_state.is_some()
@@ -1766,12 +1775,12 @@ impl FaultField {
                 } else {
                     current[c + 1]
                 };
-                // ②-H: 遠位口の 1 歩記憶(このステップに提示した値が自分の担体か)
+                // ②-H: D_i 右端の 1 歩記憶(このステップに提示した値が自分の担体か)
                 if self.signal_only && !self.mask[c + 1] {
                     let v = self.to_right[c];
                     self.own_pres_nex[c] = Some(v) == self.cb_state || Some(v) == self.afo_state;
                 }
-                // ②-D: 遠位口で cBT を折り返したら own_wave を落とす(one-shot)
+                // ②-D: D_i 右端で cBT を折り返したら own_wave を落とす(one-shot)
                 if self.signal_only && !self.mask[c + 1]
                     && self.cbt_state.is_some()
                     && (Some(self.to_left_nex[c]) == self.cbt_state
@@ -1907,8 +1916,8 @@ fn fired_intact(cells: &[St], mask: &[bool], firing: usize) -> bool {
 // 故障ありの逐次シミュレーション。injections は (種類, セル, 時刻)、wallsets は
 // (状態番号, 時刻)で時刻 t に右壁の状態を置き換える(--wallset: 論文モデルの
 // 「外部からの信号」= 壁側から提示される信号状態)。
-// signals は A1/A2 スケジュール信号(plan_a1_signals の出力)。時刻 t に管路の
-// 流入口セルへ値を置き、1/1 で流れて近位口で提示される。
+// signals は A1/A2 スケジュール信号(plan_a1_signals の出力)。時刻 t に故障区間の
+// 始端セルへ値を置き、1/1 で流れて終端で提示される。
 // メッセージは「時刻 t にその時刻のセルに置かれる=そのステップで到着処理される」。
 // 戻り値は終了した時刻(正常セル全発火または上限)。
 fn simulate_fault(
@@ -1926,13 +1935,13 @@ fn simulate_fault(
     let n = current.len() - 2;
     let mut t = 0;
     loop {
-        // この時刻の信号注入(管路の流入口セルに値を置く→ 1/1 で流れて近位口に提示)
+        // この時刻の信号注入(故障区間の始端セルに値を置く→ 1/1 で流れて終端に提示)
         for sig in signals {
             if sig.time == t {
                 if sig.to_left {
-                    // A2 の FT 注入が管路の折り返し cBT と同じステップに重なる
+                    // A2 の FT 注入が故障区間の折り返し cBT と同じステップに重なる
                     // (I_{i+1} が 1 セル: 担体の即時壁反射と解凍時刻の一致)
-                    // ときは複合 cBTFT で提示する(管路内容を上書きしない)。
+                    // ときは複合 cBTFT で提示する(D_i の内容を上書きしない)。
                     if Some(sig.value) == ff.ft_state && ff.is_cbt_family(ff.to_left[sig.cell]) {
                         ff.to_left[sig.cell] = ff.cbt_ft_state.unwrap_or(sig.value);
                     } else {
@@ -1940,10 +1949,10 @@ fn simulate_fault(
                     }
                 } else {
                     ff.to_right[sig.cell] = sig.value;
-                    // 注入始発の NG(会合放出の注入代替): 遠位口で 2 歩提示
-                    // する。流入口 pickup を通らない直接書き込みは誕生キー
+                    // 注入始発の NG(会合放出の注入代替): D_i 右端で 2 歩提示
+                    // する。始端 pickup を通らない直接書き込みは誕生キー
                     // (NG,M,r) の保持提示をアームしないので、ここで ng_hold
-                    // (現行値)に直接アームする(m=1 のとき流入口=遠位口で
+                    // (現行値)に直接アームする(m=1 のとき始端=右端で
                     // これが唯一の経路。m>=2 では中継の到着が自然にアーム)。
                     // 次ステップの fault 枝がこれを提示して消す。
                     if ff.is_ng_launch(sig.value)
@@ -1967,7 +1976,7 @@ fn simulate_fault(
         }
         ff.premerge(&current[..]);
         if dump {
-            // 計画信号の提示時刻の注記(どの信号がどの管路に乗ったかを
+            // 計画信号の提示時刻の注記(どの信号がどの故障区間に乗ったかを
             // ダンプ上で追えるようにする。freeze_tools のパーサは
             // sig: プレフィックス行をスキップする)
             for sig in signals {
@@ -1986,7 +1995,7 @@ fn simulate_fault(
                     println!("sig: t={} {}@cell{} ({})", t, name, sig.cell, dir);
                 }
             }
-            // 時刻 t の状態(その時刻に提示される信号を含む管路内容)を出す
+            // 時刻 t の状態(その時刻に提示される信号を含む D_i の内容)を出す
             dump_line(current, config, color);
             if !color {
                 if ff.mask.iter().any(|&m| m) {
@@ -2292,13 +2301,13 @@ fn main() {
         // 故障あり/制御注入は逐次実行する(制御層・中継は HALO をまたぐ隣接参照を
         // 含み、並列パスのトークン同期設計とは別の調整が必要)。
         let injections = validate_injections(&injections, cell_size);
-        // A1 モード: -f 指定で --inject/--wallset なし。管路は信号だけを運び、
+        // A1 モード: -f 指定で --inject/--wallset なし。故障区間は信号だけを運び、
         // Umeo A1/A2 の式から区間構造より算出した時刻で凍結/解凍/将軍起動を提示する。
         let signal_only = fault_arg.is_some() && injections.is_empty() && wallsets.is_empty();
-        // to_left 管路の変換 pickup は p=1 のときだけ有効(他区間の反射波が
-        // 隔離: to_left 管路の FT 変換 pickup は p=1 の D1 だけ有効(p>=2 では
+        // 左行き線(to_left)の変換 pickup は p=1 のときだけ有効(他区間の反射波が
+        // 隔離: 左行き線(to_left)の FT 変換 pickup は p=1 の D1 だけ有効(p>=2 では
         // 各区間の解凍を注入 FT が担う。他区間の反射波が解凍を起動するのを防ぐ)。
-        // to_right 入口の CB pickup も D1 だけ(fast 信号は 1 本なので)。
+        // D_i 左端(to_right)の CB pickup も D1 だけ(fast 信号は 1 本なので)。
         let d1 = analysis
             .as_ref()
             .map(|a| (a.segments[1].start, a.segments[1].end));

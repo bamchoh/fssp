@@ -168,8 +168,8 @@ def gen():
 
 def add_a1():
     # A1/A2 接続用の付加。既存の発見規則を保持したまま追記する(regen はしない)。
-    # - NG: 将軍起動信号(管路が I_{i+1} 左端の左入力に提示)
-    # - W : 管路の境界マーカー(R→L 管路のアイドル提示。www と別の状態にして
+    # - NG: 将軍起動信号(故障区間が I_{i+1} 左端の左入力に提示)
+    # - W : 故障区間の境界マーカー(左行き線のアイドル提示。www と別の状態にして
     #       凍結起動トリガー (C,L,W)->FL を素の壁反射 (C,L,www)->M と区別する)
     # - FT2: 解凍後位相のアイドル提示(凍結を経た区間の右端では、σ 線上の
     #       壁反射 (C,L,FT2)->M は初回の凍結起動と区別されて正しく再発火する)
@@ -185,13 +185,13 @@ def add_a1():
     if 'FT2' not in names:
         states.append(f'{pad("FT2")}@101010,7090E0,others')
         names.append('FT2')
-    # TR: fast 継続信号の対岸横断状態。CB から管路 to_right に入った fast 信号を
+    # TR: fast 継続信号の対岸横断状態。CB から右行き線 to_right に入った fast 信号を
     # 未起床セル上で 1/1 で運ぶ(起床前のセルだけが保持できる=起床・choreography
     # の前を必ず横断する)。壁で (TR,L,www) -> FT と 0 成本で折り返す。
     if 'TR' not in names:
         states.append(f'{pad("TR")}@101010,00CCAA,others')
         names.append('TR')
-    # CB: 境界Carrier(fast信号の管路引き渡し)。凍結起動トリガーのステップだけ
+    # CB: 境界Carrier(fast信号の故障区間引き渡し)。凍結起動トリガーのステップだけ
     # 境界セルが表示する。左隣からは F(held) と同じに見え、右側には信号を流す。
     if 'CB' not in names:
         states.append(f'{pad("CB")}@101010,0088CC,others')
@@ -199,8 +199,8 @@ def add_a1():
     additions = [
         (('www', 'L', 'L'), 'L'),    # 区間左端のアイドル(balzer の www 規則にはない)
         (('www', 'L', 'www'), 'L'),  # 1 セル区間(右端)のアイドル
-        (('www', 'L', 'W'), 'L',),   # 1 セル中間区間のアイドル(左=www、右=管路 W)
-        (('NG', 'L', 'L'), 'M'),     # 管路の将軍起動信号提示でセルを M へ
+        (('www', 'L', 'W'), 'L',),   # 1 セル中間区間のアイドル(左=www、右=故障区間 W)
+        (('NG', 'L', 'L'), 'M'),     # 故障区間の将軍起動信号提示でセルを M へ
         # 起動区間が右端(長さ1)の場合は起動=発火((NG, L, www) のみが目印)
         (('NG', 'L', 'www'), 'F'),
         # n1=1 の縮退区間: FS クランプ時の将軍が FM で凍結し、FT 到着=発火
@@ -209,7 +209,7 @@ def add_a1():
         # A2: 1 セルの中間区間は起動(NG, 左入力)と凍結(FS, 右入力)が同一ステップ
         # に同時提示される(n_i >= 2 では FS が後発なのでこの組み合わせは出ない)
         (('NG', 'L', 'FS'), 'FL'),
-        # A2: 1 セル中間区間の解凍=発火(凍結保持値は L、左入力は管路の www)
+        # A2: 1 セル中間区間の解凍=発火(凍結保持値は L、左入力は故障区間の www)
         (('www', 'FL', 'FT'), 'F'),
         # 凍結起動トリガー: 区間の自らの構成の C 波が右端に到達したステップで
         # 壁反射の代わりに凍結に移る。トリガーはこのステップだけ使われる。
@@ -222,18 +222,18 @@ def add_a1():
         # ままにする: CB は同じステップ内の carrier として働く)
         (('C', 'CB', 'W'), 'FL'),
         # fast 継続信号の対岸横断(規則層):
-        #   - 入口 pickup 経由で CB が対岸の左入力に現れると横断状態 TR に
+        #   - D_i 左端 pickup 経由で CB が対岸の左入力に現れると横断状態 TR に
         #     (未起床セルのみ。L と www の相手を横断する)
         #   - 配列右端(www と隣接)で 0 成本で解凍信号 FT に折り返す
-        #   - FT は左走行で未起床セルを戻り、管路遠位口 pickup で to_left に
+        #   - FT は左走行で未起床セルを戻り、D_i 右端 pickup で to_left に
         #     乗せられて R_i の右入力に提示される(時刻式は往復 1/1 から自動一致)
         #   - 波は 1 セル 1 ステップの提示で進み、すぐもとのアイドルに戻る
         (('CB', 'L', 'L'), 'TR'),
         (('CB', 'L', 'www'), 'FT'),  # 対岸が 1 セル区間: 受容と同時に折り返し
         (('TR', 'L', 'L'), 'TR'),
         (('TR', 'L', 'www'), 'FT'),
-        (('TR', 'L', 'W'), 'TR'),  # p>=2: 通過のまま次の管路の入口 pickup へ
-        # TR 波の通過セルの元のアイドル提示に戻る(左隣は管路 www か アイドル L、
+        (('TR', 'L', 'W'), 'TR'),  # p>=2: 通過のまま次の故障区間の左端 pickup へ
+        # TR 波の通過セルの元のアイドル提示に戻る(左隣は故障区間 www か アイドル L、
         # 右隣はアイドル L / TR 波 / 折り返し後の FT が見える)
         (('L', 'TR', 'L'), 'L'),
         (('www', 'TR', 'L'), 'L'),
@@ -271,7 +271,7 @@ def add_a1():
     # 境界Carrier CB: セルが CB を表示している間、その左(凍結側)のルールは
     # これを F(L)=FL と同じに扱う。(x, FL, r) -> y を (x, CB, r) に、
     # (l, c, FL) -> y を (l, c, CB) に複製(CB は FL と同じ機械として振る舞い、
-    # 加えて fast 信号の管路引き渡しを担う)。
+    # 加えて fast 信号の故障区間引き渡しを担う)。
     cb_copies = 0
     for key in list(rulemap.keys()):
         for slot, old_val in [(1, 'FL'), (2, 'FL')]:
@@ -284,7 +284,7 @@ def add_a1():
                 rulemap[new_key] = rulemap[key]
                 cb_copies += 1
     # 解凍後位相 FT2: (x, a, www) -> y の規則を (x, a, FT2) -> y にも複製する。
-    # FT2 は右端の管路だけが提示するので、境界セル以外の既存規則には影響しない。
+    # FT2 は右端の故障区間だけが提示するので、境界セル以外の既存規則には影響しない。
     ft2_copies = 0
     for key in list(rulemap.keys()):
         if key[2] == 'www':
@@ -332,14 +332,14 @@ def cells(row):
 
 
 def golden_rows(n):
-    # 会合機械入りルールの障害なし走行(凍結ケースの基準。機械自身の
+    # 会合機構入りルールの障害なし走行(凍結ケースの基準。機械自身の
     # S33 排出表示も期待どおりに含むことに注意)
     return state_rows(run(BIN, ['-r', FULL_RULE, '-s', str(n), '-d']))
 
 
 def golden_base(n):
-    # 素の balzer の障害なし走行(A1 の基準 choreography。会合機械は
-    # 凍結機械と同居するため、I1 の基準には素のルールセットを使う)
+    # 素の balzer の障害なし走行(A1 の基準 choreography。会合機構は
+    # 凍結機構と同居するため、I1 の基準には素のルールセットを使う)
     return state_rows(run(BIN, ['-r', BASE_RULE, '-s', str(n), '-d']))
 
 
@@ -502,7 +502,7 @@ _gold2m_cache = {}
 
 
 def gold2m_cells(n2):
-    """I_{i+1} の choreography = 会合機械仕様の障害なし走行(journey 込み)。
+    """I_{i+1} の choreography = 会合機構仕様の障害なし走行(journey 込み)。
     golden_rows(会合ルール集合の障害なし走行)を n2 で実行して返す。"""
     if n2 not in _gold2m_cache:
         _gold2m_cache[n2] = [cells(row) for row in golden_rows(n2)]
@@ -646,7 +646,7 @@ def run_a1(n1, m1, n2):
 def add_composite():
     # CA 局所化 第 2 段(実装): 壁反射の左走行解凍波 T3 と、起床済みセル上の
     # 複合 carrier <X>T3(chateau+signal)。論文の第 3 反射信号は I_{p+1} を左走行
-    # して I_i の右端で解凍を起動する(p=1 では to_left 管路に回収されて I1 を
+    # して I_i の右端で解凍を起動する(p=1 では 左行き線(to_left)に回収されて I1 を
     # 解凍)。横断先のセルが起床済み(choreography 表示中)のとき、波の通過で
     # choreography を止めることはできない(I_{p+1} は 2n-2 で無遅延発火する)ので:
     #   - 吸収:  (l, X, <Y>T3) -> <f(l,X,Y)>T3。セルは複合表示になり、自身の
@@ -654,8 +654,8 @@ def add_composite():
     #            1/1 で進むので時刻に遅延は生じない。
     #   - 放出:  (l, <X>X>T3, r) ではなく (l, <X>T3, r) -> f(l,X,r)。次ステップ
     #            で choreography に戻り、波は左隣へ(左隣は次の吸収を行う)。
-    # 未起床(静止 L)セル上では波は純 T3 のまま走る。管路の遠位口 pickup は
-    # (rust 側)T3 / 複合を検知すると純 FT に変換して管路に乗せる。
+    # 未起床(静止 L)セル上では波は純 T3 のまま走る。故障区間の右端 pickup は
+    # (rust 側)T3 / 複合を検知すると純 FT に変換して故障区間に乗せる。
     states, rules, pre, post = load(OUT_RULE)
     rulemap = parse_rules(rules)
     names = [state_name(s) for s in states]
@@ -669,19 +669,19 @@ def add_composite():
             states.append(pad(c) + '@101010,B070C0,others')
             names.append(c)
     # 1. 壁反射の折り返し(wip の FT 直接流用を T3 に。I_{p+1}=1 セル区間の
-    #    即時折り返しと、FT2 位相の管路がある場合の折り返しも T3 へ)
+    #    即時折り返しと、FT2 位相の故障区間がある場合の折り返しも T3 へ)
     rulemap[('TR', 'L', 'www')] = 'T3'
     rulemap[('CB', 'L', 'www')] = 'T3'
     rulemap[('TR', 'L', 'FT2')] = 'T3'
     rulemap[('CB', 'L', 'FT2')] = 'T3'
-    # 1b. p >= 2: 横断の入口・放出の管路境界(W 提示)コンテキスト。I_{i+1} が
-    #     1 セルでその右隣が次の管路の場合、入口/放出の右入力は W。
+    # 1b. p >= 2: 横断の D_i 左端・放出の故障区間境界(W 提示)コンテキスト。I_{i+1} が
+    #     1 セルでその右隣が次の故障区間の場合、D_i 左端/放出の右入力は W。
     rulemap[('CB', 'L', 'W')] = 'TR'
     for x in ['L', 'www']:
         rulemap[(x, 'TR', 'W')] = 'L'
-    # 1c. 出入口の衝突: 左入力に CB(区間の送出)が流れていて、右隣に左走行波
+    # 1c. 両端の衝突: 左入力に CB(区間の送出)が流れていて、右隣に左走行波
     #     (純 T3 / 複合 <Y>T3)が同時にいる場合、表示は横断 TR を優先する
-    #     (送出波の旅程が優先。T3 は次ステップで管路の口で消える)。
+    #     (送出波の旅程が優先。T3 は次ステップで D_i の両端で消える)。
     for y in ['T3'] + [s + 'T3' for s in ['A', 'B', 'C', 'L', 'M', 'Q', 'R']]:
         rulemap[('CB', 'L', y)] = 'TR'
     # 2. 未起床セル上の左走行波(wip の FT 直接流用を T3 に置換し、FT の
@@ -782,11 +782,11 @@ def add_meeting():
     #       滞在中も choreography が正確に進み、復帰 (l, 複合S3B, r) -> f(l,X,r)
     #       でシームレスに合流する(氷結前線との干渉なし)。
     #     氷結複合 X+ph(大文字 = F_v+信号): 凍結セル上は仮想値一定 v。
-    #   R2(反射信号の I1 極性版): to_left 遠位口の TR 装填(rust 側)から 1/1 左走行、
+    #   R2(反射信号の I1 極性版): D_i 右端(to_left)の TR 装填(rust 側)から 1/1 左走行、
     #     表示 rho(x) = 2S+1-x。会合は時間一致が 4x=2S+2(S 偶数: R2 右隣キー,
     #     c = S/2+1)/4x=2S+3(S 奇数: R2 中央キー, c=(S+3)/2)で排他的に一致する。
     #   NG 会合放出: 会合セルで 1 歩表示(奇数 S は 2 歩: 左隣 ph2 触発の再点火防止)
-    #     し、1/1 右走行して I1 右端から to_right 入口 pickup(rust 側)で管路へ。
+    #     し、1/1 右走行して I1 右端から D_i 左端(to_right) pickup(rust 側)で故障区間へ。
     # 交差(off = f-tau = 2n1+1-4x ≡ 奇数)は off ∈ {1, 3} のみ(off 0/2 は不可能)。
     #   off=1: 発火表示の次ステップで氷結複合へ(off>=1 なので発火は完了)。
     #   off=3: 滞在 3 歩完了後、ph2 表示が x+1 の触発と held=gold[f-1] への復帰を
@@ -953,7 +953,7 @@ def add_meeting():
                 put((l, c, X + 'S3A'), 'F' + c)
                 put((l, c, X + 'S3B'), 'F' + c)
 
-    # -- 管路の L→R アイドルは L を提示する(rust 側)。I_{i+1} 左端の
+    # -- 右行き線のアイドルは L を提示する(rust 側)。I_{i+1} 左端の
     #    (www, M, r) 境界規則を (L, M, r) にミラーする(ただし S33 排出を
     #    除く: (www, M, L) のみ排出、(L, M, r) はすべて保持)
     for r in (['L', 'www'] + held + fv
@@ -978,7 +978,7 @@ def add_meeting():
             for ph in ('S33', 'S3A', 'S3B'):
                 put((lo[h] + ph, b, c), y)
                 put((h + ph, b, c), y)
-    # www-lane の残り(管路の左入力がwwwを提示するルールがまだある場合)を
+    # www-lane の残り(故障区間の左入力がwwwを提示するルールがまだある場合)を
     # L-lane にミラーする。除外: 排出(www,M,L)と journey 複合ターゲット/レーン
     for (a, b, c), y in list(rulemap.items()):
         if a != 'www':
@@ -998,7 +998,7 @@ def add_meeting():
         for v in held:
             put((l, 'F' + v, 'TR'), v + 'R2')        # n1 右端での装填
     # c = n1(偶数 S)の会合放出: R2 の装填時刻 2S+1−n1 が t_dep と一致し、
-    # R2 を会合セルの右隣(管路側)に進められないため、装填と同時に
+    # R2 を会合セルの右隣(故障区間側)に進められないため、装填と同時に
     # journey 位相(S3A、t_dep−1 = 3n1−4 = n1+2m1 の唯一の一致)を左隣に
     # 見る放出キーが担う。n2 = 1 では t_dep−1 の左隣位相が S33 になるうえ
     # ポートを FT が奪うので發火しない(exp も放出を表示しない=一貫)。
@@ -1032,7 +1032,7 @@ def add_meeting():
                 # S 偶数: R2 が会合セルの右隣に来た瞬間(細胞 c-1 は滞在 1 歩目)
                 put((v + 'S3A', 'F' + w, s + 'R2'), w + 'NG')
                 # S 奇数: R2 が会合セル自身に来た瞬間(細胞 c-1 は滞在 0 歩目)。
-            # 会合セル = n1(m1 = n1-1)では右隣は管路の W/L 提示
+            # 会合セル = n1(m1 = n1-1)では右隣は故障区間の W/L 提示
                 for r in fv + ['W', 'L']:
                     put((v + 'S33', w + 'R2', r), w + 'NG')
     # -- NG 会合放出(1/1 右走行)と I2 左端の起動 -----------------------------
@@ -1119,8 +1119,8 @@ def add_meeting():
     # -- NG carrier の左隣レーン(2 通り)--------------------------------------
     # (i) 会合セル c_m の右隣が既に解凍済みのとき(放出と右隣の解凍が同時):
     #     carrier の保値 v = 左隣の凍結表示なので素の (F_v, c, r) で置き換える。
-    # (ii) 奇数 S の 2 歩表示による管路再装填が起動済み I2 左端に当たるとき:
-    #     管路由来なので素の (L, M, r) と同じ扱い(中央は起動直後の M のみ)。
+    # (ii) 奇数 S の 2 歩表示による故障区間再装填が起動済み I2 左端に当たるとき:
+    #     故障区間由来なので素の (L, M, r) と同じ扱い(中央は起動直後の M のみ)。
     for (l, c, r), y in list(rulemap.items()):
         if l != 'L' or c != 'M' or r == 'FT2':
             continue
@@ -1223,19 +1223,19 @@ def add_meeting():
 
 def add_ab():
     # ②-C (A3 の解凍 = a/b 会合機構、2026-11-06 再設計版):
-    #   前進対: b 波 bF(定刻)と a 波 aF(1 歩後ろ)。I_i 右端の CB 入庫で管路
-    #     入口が生成する(rust)。未起床セル上を 1/1 で右走し、壁で反射して
+    #   前進対: b 波 bF(定刻)と a 波 aF(1 歩後ろ)。I_i 右端の CB 入庫で故障区間
+    #     D_i 左端が生成する(rust)。未起床セル上を 1/1 で右走し、壁で反射して
     #     bF→bR、aF→T3 になる。b の前進停留(I_{i+1}..I_p 左端で +1)と a の
-    #     帰還停留(D_p..D_{i+1} 入口で +1)は管路入口の 1 歩遅延線(rust)。
+    #     帰還停留(D_p..D_{i+1} 左端で +1)は D_i 左端の 1 歩遅延線(rust)。
     #   帰還対: bR / T3 は未起床セル(純)・起床済みセル(<X>bw)・凍結セル
-    #     (F_v⊕bw)を複合で 1/1 貫通する(不活性)。管路が提示する帰還波は
-    #     境界マーカー付き WT3 / WbR(管路の口 W と区別しない鍵が凍結起動
+    #     (F_v⊕bw)を複合で 1/1 貫通する(不活性)。故障区間が提示する帰還波は
+    #     境界マーカー付き WT3 / WbR(D_i の両端 W と区別しない鍵が凍結起動
     #     (C,L,W)→CB を壊すため)。
-    #   会合: 自対の管路 D_i 入口で b 帰還の 1 セル後ろに a がいる(rust 判定)
+    #   会合: 自対の D_i 左端で b 帰還の 1 セル後ろに a がいる(rust 判定)
     #     と提示値が abX になり、(l, F_v, abX) が (l, F_v, FT) と同じ解凍。
     #   同一セル衝突: 前進波と帰還波が同じセルに着地する(対向 1/1 で必ず起
     #     きる)ので複合 bF⊕bw / aF⊕bw / CB⊕bw(右端の担体表示と帰還波)。
-    #     管路の口は複合の「管に入る成分」だけを取り込む(rust 射影)。
+    #     D_i の両端は複合の「線に入る成分」だけを取り込む(rust 射影)。
     #   生成法: (1) 未起床セル上の波の重ね合わせ規則を直接生成、(2) 既存の
     #     T3 鍵を bR に鏡写し(bR ≡ T3 の挙動)、(3) 解凍鍵 abX、(4) ホスト
     #     (L/X/F_v/CB/W/bF/aF)に波が乗る複合鍵を既存鍵から不動点で複製
@@ -1248,7 +1248,7 @@ def add_ab():
     lo = {h: h.lower() for h in held}
     phn = ('S33', 'S3A', 'S3B')
     # journey(1/3 信号)の複合: 起床済みセル lo[X]+ph と凍結セル X+ph の両系。
-    # ②-D(A3 の NG 会合機械)では journey 滞在中のセルを他区間の帰還波
+    # ②-D(A3 の NG 会合機構)では journey 滞在中のセルを他区間の帰還波
     # (T3/bR)が 1/1 で抜けるので、両系とも bw を 1 歩運ぶ複合が要る。
     journeys = ([lo[h] + ph for h in held for ph in phn]
                 + [h + ph for h in held for ph in phn])
@@ -1257,10 +1257,10 @@ def add_ab():
     fws = ('bF', 'aF')
     # ②-E 重ね合わせ: 前進対 aFbF(停留中の b に次段の a が追いつく)と、その
     # 壁反射 T3bR(帰還対)。起床済み/未起床セルにだけ乗る(凍結区間には入らない:
-    # 帰還対は D_p 入口で a が停留して分かれる)。
+    # 帰還対は D_p 左端で a が停留して分かれる)。
     fws3 = ('bF', 'aF', 'aFbF')
     bws3 = ('T3', 'bR', 'T3bR')
-    # ②-D: R2(第 2 反射、凍結セル上を左走)、{X}NG(会合放出、右走)、管路が
+    # ②-D: R2(第 2 反射、凍結セル上を左走)、{X}NG(会合放出、右走)、故障区間が
     # 折り返す cBT も帰還波と同時刻・同方向に重なるので bw 複合を持つ。
     r2s = [h + 'R2' for h in held]
     ngs = [h + 'NG' for h in held]
@@ -1270,7 +1270,7 @@ def add_ab():
     wks = list(wk.values())
     # ②-G: 起床済みセル上を左走する R2 担体 xR2(A1 で I_{p+1} が 1 セルのとき、
     # 壁反射が即時なので折り返し cBT と解凍 FT が同時に届き、R2 が解凍前線と
-    # 同じセルを走る)。管路の提示値 cBTFT = cBT ⊕ FT。
+    # 同じセルを走る)。故障区間の提示値 cBTFT = cBT ⊕ FT。
     wk2 = {h: lo[h] + 'R2' for h in held}
     wk2s = list(wk2.values())
     hosts_plain = (['L'] + [h for h in held if h != 'L'] + fv + ['CB', 'W']
@@ -1312,7 +1312,7 @@ def add_ab():
                         'aFbFT3bR']
     newn += [h + 'T3bR' for h in held if h != 'L']
     newn += wks + [w + bw for w in wks for bw in bws]
-    newn += wk2s + ['cBTFT', 'aFo']   # aFo: 管内専用(自管路の a 波マーカー、規則なし)
+    newn += wk2s + ['cBTFT', 'aFo']   # aFo: D_i 内専用(自分の D_i の a 波マーカー、規則なし)
     for h in ([x for x in held if x != 'L'] + fv + ['CB'] + list(fws) + journeys
               + r2s + ngs + ['cBT']):
         for bw in bws:
@@ -1389,7 +1389,7 @@ def add_ab():
             n1b += n_add[0] - before
     n1 += n1b
     # 1 セル区間(i>=2)の起動: NG 到着時の表示を担体 CB にする(自身が右端。
-    # (L,CB,W)→FL で次ステップ凍結、管路入口が CB を拾って a/b 対を生成)。
+    # (L,CB,W)→FL で次ステップ凍結、D_i 左端が CB を拾って a/b 対を生成)。
     put(('NG', 'L', 'W'), 'CB')
     # ── 2. 既存 T3 鍵の bR 鏡写し(bR は T3 と同じ挙動で貫通する) ──────────
     def mirror(x):
@@ -1463,16 +1463,16 @@ def add_ab():
                 put((l, c + bw, 'abX'), t)
         n3 += n_add[0] - before
 
-    # ── 3a. ②-E 1 セル区間の journey(会合機械を 1 セル区間にも適用する) ──
+    # ── 3a. ②-E 1 セル区間の journey(会合機構を 1 セル区間にも適用する) ──
     #    i>=2: 起動 NG で CB を表示した次ステップから凍結 journey LS33→LS3A→
-    #          LS3B→FL(左入力は管路アイドル L、または 2 歩提示の 2 歩目 NG)。
-    #    i=1 : 将軍 M の右が管路(W)なら t=0 に凍結+journey MS33→…→FM。
-    #          管路入口は初回 pickup の M を担体として拾う(rust)。
+    #          LS3B→FL(左入力は故障区間アイドル L、または 2 歩提示の 2 歩目 NG)。
+    #    i=1 : 将軍 M の右が故障区間(W)なら t=0 に凍結+journey MS33→…→FM。
+    #          D_i 左端は初回 pickup の M を担体として拾う(rust)。
     n3a = 0
     for key, tgt in [(('L', 'CB', 'W'), 'LS33'), (('NG', 'CB', 'W'), 'LS33'),
                      (('LNG', 'CB', 'W'), 'LS33'), (('www', 'M', 'W'), 'MS33'),
-                     # A2: 1 セル区間に担体 CB が提示されたときの横断表示(右が管路 W)。
-                     # 折り返し(R2 装填)の判定表示で、fast 継続は次の管路入口が
+                     # A2: 1 セル区間に担体 CB が提示されたときの横断表示(右が故障区間 W)。
+                     # 折り返し(R2 装填)の判定表示で、fast 継続は次の D_i 左端が
                      # cBT 表示を TR として拾う(rust)。表示後は L に戻る。
                      (('CB', 'L', 'W'), 'cBT'), (('L', 'cBT', 'W'), 'L')]:
         before = n_add[0]
@@ -1482,7 +1482,7 @@ def add_ab():
     # ── 3c. 起動 NG と帰還波の同時到着: 起動が勝つ。(NG|LNG|{X}NG, L, L)→M の
     #    右レーンを未起床セル上の波(T3/bR/T3bR と L ホスト複合)に広げ、目標に
     #    波を乗せる(M⊕bw)。add_collisions の (NG, L, T3族)→T3(通過)を上書き
-    #    する: 管路入口会合を A2 でも有効にしたことで、fast 波の T3 エコーが
+    #    する: D_i 左端の会合を A2 でも有効にしたことで、fast 波の T3 エコーが
     #    起動 NG と同時に I_{i+1} 左端に来る配置が現れた(実測 n=10 -f 3,6)。
     n3c = 0
     ng_lanes = ['NG', 'LNG'] + [h + 'NG' for h in held] + wks
@@ -1573,7 +1573,7 @@ def add_ab():
             put((l, jc, wk2[r]), t)            # 右隣で会合(R2 消費)しつつ解凍
             put((l, jc, wk[r]), t)             # 右隣の NG(右走)は無関係
             n3f += n_add[0] - before
-    # 奇数 S の会合鍵 (vS33, wR2, r)→wNG の右レーンに FT2(解凍後の管路アイドル。
+    # 奇数 S の会合鍵 (vS33, wR2, r)→wNG の右レーンに FT2(解凍後の故障区間アイドル。
     # A1 で I_{p+1} が 1 セルのときは R2 装填と同時に解凍位相に入る)を加える。
     for (l, c, r), t in list(rulemap.items()):
         if r == 'W' and c in r2set and t in ngs:
@@ -1626,9 +1626,9 @@ def add_ab():
                     put((l, wk2[w_], r2), wk[split(th)[0]])
                     n3f += n_add[0] - before
 
-    # ── 3b. ②-E 管路入口の会合: 会合セルが入口セルに落ちる対では cBT(第 2
+    # ── 3b. ②-E D_i 左端の会合: 会合セルが左端セルに落ちる対では cBT(第 2
     #    反射)が I_i 右端の journey 滞在中に提示される。R2 は装填せず(会合は
-    #    入口の機械が行う)、journey はアイドル W を見たときと同じ進行をする。
+    #    D_i 左端セルが行う)、journey はアイドル W を見たときと同じ進行をする。
     n3b = 0
     uj = [h + ph for h in held for ph in phn]
     for (l, c, r), t in list(rulemap.items()):
@@ -1769,9 +1769,9 @@ def add_collisions():
     names = set(state_name(x).strip() for x in states)
     n_add = 0
     # 専用状態 cBT: 対の担体(CB)が D_i を横断して I_{i+1} 左端に提示されるとき
-    # の表示。素の TR だと遠位口 pickup の (F_l,F_v,TR)→{v}R2 変換が fast 波
+    # の表示。素の TR だと D_i 右端 pickup の (F_l,F_v,TR)→{v}R2 変換が fast 波
     # ride の TR にも無差別発火して偽 R2 誕生(実測 (2,1,5,3,2) n=13)。
-    # cBT だけを遠位口 pickup(own_wave ゲート)が拾うので区別できる。
+    # cBT だけを D_i 右端 pickup(own_wave ゲート)が拾うので区別できる。
     if 'cBT' not in names:
         states.append(pad('cBT') + '@101010,E0C040,others')
         names.add('cBT')
@@ -1842,7 +1842,7 @@ def add_collisions():
 
 def add_birth():
     # ②-B 誕生+衝突族(2026-10-17 exp_birth 実験の緑化結果を本線へ):
-    #   1. 誕生キー (NG|LNG, M, L) -> mS33。管路中継の NG 2 歩提示(rust 側
+    #   1. 誕生キー (NG|LNG, M, L) -> mS33。故障区間中継の NG 2 歩提示(rust 側
     #      ng_hold)の 2 歩目に左入力 LNG/NG を見て I_{i+1} の journey を誕生
     #      させる。素の (L,M,L) は I1 解凍後 ordinary choreography でも起こる
     #      ので絶対に置換しない。
@@ -1852,7 +1852,7 @@ def add_birth():
     #      - 右レーン <r>T3:   吸収(target の T3 付き表示)。
     #        就寝セル(中心 L)は除外(純 T3 貫通の既存族を壊さない)
     #      新状態 = lo[h]+ph+T3(21): journey 滞在中のセルが T3 を 1 歩運ぶ
-    #      carrier(遠位口 pickup は rust 側で 6 文字小文字 T3 複合を認識する)。
+    #      carrier(D_i 右端 pickup は rust 側で 6 文字小文字 T3 複合を認識する)。
     states, rules, pre, post = load(OUT_RULE)
     rulemap = parse_rules(rules)
     names = [state_name(s) for s in states]
@@ -2023,7 +2023,7 @@ def discover_a1():
                         if a.strip() != e.strip()]
                 if not mism or t == 0:
                     continue
-                # 不一致行の直前のアクティブ行+管路提示から規則キーを組み立てる
+                # 不一致行の直前のアクティブ行+ D_i 提示から規則キーを組み立てる
                 prev = cells(act[t - 1])
                 rrow = rrows[t - 1] if t - 1 < len(rrows) else None
                 lrow = lrows[t - 1] if t - 1 < len(lrows) else None
@@ -2166,7 +2166,7 @@ def seg_expected(a3, sizes, golds):
         return d
 
     # セル番号(全体座標) → (区間種, 区間番号, セル番号)。全体座標 x のセルは
-    # t = x-1 に fast 継続(TR)の表示を持つ(将軍の 1/1 波が管路を 1/1 で渡って
+    # t = x-1 に fast 継続(TR)の表示を持つ(将軍の 1/1 波が故障区間を 1/1 で渡って
     # 各 I_i (i>=2) を未起床のまま通過する。I_{p+1} の壁セル(x = n)では表示
     # なしで T3 に折り返す)。
     pos = []
