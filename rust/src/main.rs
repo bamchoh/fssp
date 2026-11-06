@@ -1054,6 +1054,12 @@ impl FaultField {
         if x > n {
             return false;
         }
+        // 実験(規則層化の可否判断): FSSP_NPD_ALWAYS=1 で「次の対が存在する」を常に
+        // 真にし、最終区間でも journey が生まれる(=非局所な最終区間知識を使わない)
+        // 場合の挙動を実測する。
+        if std::env::var("FSSP_NPD_ALWAYS").is_ok() {
+            return true;
+        }
         let mut n_i1 = 0usize;
         while x <= n && !self.mask[x] {
             n_i1 += 1;
