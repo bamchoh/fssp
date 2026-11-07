@@ -17,3 +17,7 @@ rust/balzer-freeze-a3sweep.rul.txt
 rust/fssp-a3sweep.exe
 rust/__pycache__/
 balzer-freeze-pure.rul.txt
+
+# fssp --html の出力(viewer.html はテンプレートなので除外しない)
+rust/*.html
+!rust/viewer.html

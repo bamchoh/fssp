@@ -422,6 +422,183 @@ fn dump_line(cells: &[St], config: &Config, color: bool) {
     dump_plain(cells, config);
 }
 
+// ── 時空図の記録(--html / --json)──────────────────────────────────────
+// -d/-c が端末に出す内容(各時刻の状態行、故障区間の R:/L: 線の内容、F: 凍結行、
+// sig: 注記)をそのまま構造として持ち、ブラウザで見る自己完結 HTML(viewer.html に
+// JSON を埋め込む)か JSON に書き出す。行は実セル 1..=n のみ。
+struct Trace {
+    rows: Vec<Vec<St>>,        // rows[t][c-1] = 時刻 t のセル c の状態
+    to_right: Vec<Vec<St>>,    // 故障セルの右行き線の内容(正常セルは 0 で無視)
+    to_left: Vec<Vec<St>>,     // 故障セルの左行き線の内容
+    frozen: Vec<Vec<bool>>,    // F: 行相当(凍結フラグまたは凍結変状態)
+    notes: Vec<(usize, String)>, // (時刻, 注記): sig: 行
+    header: Vec<String>,       // a1: 行などの前置き注記
+}
+
+impl Trace {
+    fn new() -> Trace {
+        Trace { rows: vec![], to_right: vec![], to_left: vec![], frozen: vec![], notes: vec![], header: vec![] }
+    }
+
+    fn push(&mut self, current: &[St], ff: Option<&FaultField>, config: &Config) {
+        let n = current.len() - 2;
+        self.rows.push(current[1..=n].to_vec());
+        match ff {
+            Some(ff) => {
+                self.to_right.push(ff.to_right[1..=n].to_vec());
+                self.to_left.push(ff.to_left[1..=n].to_vec());
+                let fr: Vec<bool> = (1..=n).map(|c| ff.frozen[c] || ff.rule_frozen(c, current, config)).collect();
+                self.frozen.push(fr);
+            }
+            None => {
+                self.to_right.push(vec![0; n]);
+                self.to_left.push(vec![0; n]);
+                self.frozen.push(vec![false; n]);
+            }
+        }
+    }
+}
+
+// 規則ファイルの色は BBGGRR の 16 進(color_code と同じ解釈)。CSS の #rrggbb にする。
+fn css_color(color: &str) -> String {
+    if color.len() < 6 {
+        return "#808080".to_string();
+    }
+    format!("#{}{}{}", &color[4..6], &color[2..4], &color[0..2])
+}
+
+fn json_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for ch in s.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '<' => out.push_str("\\u003c"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+fn json_rows<T: Copy>(rows: &[Vec<T>], f: impl Fn(T) -> String) -> String {
+    let mut out = String::from("[");
+    for (i, row) in rows.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push('[');
+        for (j, &v) in row.iter().enumerate() {
+            if j > 0 {
+                out.push(',');
+            }
+            out.push_str(&f(v));
+        }
+        out.push(']');
+    }
+    out.push(']');
+    out
+}
+
+// 時空図の JSON。meta は {n, faults, a3, pure, result, rule, cmd}、
+// states は規則ファイルの全状態(名前・前景・背景・種別)、pure のときは射影表も。
+fn trace_json(trace: &Trace, config: &Config, mask: &[bool], meta: &[(&str, String)], pure: bool) -> String {
+    let mut out = String::from("{");
+    out.push_str("\"meta\":{");
+    for (i, (k, v)) in meta.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(&format!("{}:{}", json_str(k), v));
+    }
+    out.push_str("},\"states\":[");
+    for (i, st) in config.states.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(&format!(
+            "{{\"n\":{},\"fg\":{},\"bg\":{},\"k\":{}}}",
+            json_str(st.name.trim()),
+            json_str(&css_color(&st.foreground)),
+            json_str(&css_color(&st.background)),
+            json_str(st.class.trim())
+        ));
+    }
+    let n = mask.len().saturating_sub(2);
+    let mask_json: Vec<String> = (1..=n).map(|c| if mask[c] { "1".into() } else { "0".into() }).collect();
+    out.push_str(&format!("],\"mask\":[{}]", mask_json.join(",")));
+    out.push_str(&format!(",\"rows\":{}", json_rows(&trace.rows, |v: St| v.to_string())));
+    out.push_str(&format!(",\"toRight\":{}", json_rows(&trace.to_right, |v: St| v.to_string())));
+    out.push_str(&format!(",\"toLeft\":{}", json_rows(&trace.to_left, |v: St| v.to_string())));
+    out.push_str(&format!(",\"frozen\":{}", json_rows(&trace.frozen, |v: bool| if v { "1".into() } else { "0".into() })));
+    out.push_str(",\"notes\":[");
+    for (i, (t, text)) in trace.notes.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(&format!("{{\"t\":{},\"text\":{}}}", t, json_str(text)));
+    }
+    out.push_str("],\"header\":[");
+    for (i, text) in trace.header.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(&json_str(text));
+    }
+    out.push(']');
+    if pure {
+        let arr = |v: &Vec<St>| -> String {
+            let xs: Vec<String> = v.iter().map(|x| x.to_string()).collect();
+            format!("[{}]", xs.join(","))
+        };
+        out.push_str(&format!(",\"pl\":{},\"pr\":{},\"pj\":{}", arr(&config.pl), arr(&config.pr), arr(&config.pj)));
+    }
+    out.push('}');
+    out
+}
+
+const VIEWER_HTML: &str = include_str!("../viewer.html");
+
+// --html / --json の書き出し。HTML は viewer.html の `/*__FSSP_DATA__*/null` を
+// JSON で置き換えた自己完結ファイル。
+fn write_trace_outputs(
+    html: &Option<String>,
+    json: &Option<String>,
+    trace: &Trace,
+    config: &Config,
+    mask: &[bool],
+    meta: &[(&str, String)],
+    pure: bool,
+) {
+    if html.is_none() && json.is_none() {
+        return;
+    }
+    let data = trace_json(trace, config, mask, meta, pure);
+    if let Some(path) = json {
+        if let Err(e) = std::fs::write(path, &data) {
+            eprintln!("--json: cannot write {}: {}", path, e);
+        } else {
+            println!("json: {}", path);
+        }
+    }
+    if let Some(path) = html {
+        let marker = "/*__FSSP_DATA__*/null";
+        if !VIEWER_HTML.contains(marker) {
+            eprintln!("--html: viewer template lacks the data marker");
+            return;
+        }
+        let page = VIEWER_HTML.replacen(marker, &data, 1);
+        if let Err(e) = std::fs::write(path, page) {
+            eprintln!("--html: cannot write {}: {}", path, e);
+        } else {
+            println!("html: {}", path);
+        }
+    }
+}
+
 // -d モード用: 逐次で 1 ステップごとに途中経過を出力する。
 // 出力は「初期配置 + 1〜発火ステップまでの各行」で ruby -d と同じ列になる。
 // (並列ではワーカー間のトークン同期の中で全体を一つのタイミングで
@@ -431,15 +608,27 @@ fn simulate_dump(
     next_cells: &mut Vec<St>,
     config: &Config,
     n: usize,
+    print: bool,
     color: bool,
+    mut trace: Option<&mut Trace>,
 ) -> usize {
-    dump_line(current, config, color);
+    if print {
+        dump_line(current, config, color);
+    }
+    if let Some(tr) = trace.as_deref_mut() {
+        tr.push(current, None, config);
+    }
     let mut t = 0;
     while !fired(current, config.firing) && t <= ((n << 1) - 2) {
         nextline(current, next_cells, config);
         t += 1;
         std::mem::swap(current, next_cells);
-        dump_line(current, config, color);
+        if print {
+            dump_line(current, config, color);
+        }
+        if let Some(tr) = trace.as_deref_mut() {
+            tr.push(current, None, config);
+        }
     }
     t
 }
@@ -2059,19 +2248,20 @@ impl FaultField {
     // A1 モードでは、凍結変状態 F(x) を表示しているセル(ルール層で凍結)も * で
     // 示す(FA/FB/FC/FL/FM/FQ/FR = 2 文字の F で始まる状態名)。
     // 各行の列幅は状態行と揃えて位置を対応させる。
+    // 正常セルが凍結変状態 F(x)(FA/FB/FC/FL/FM/FQ/FR)を表示しているか
+    fn rule_frozen(&self, c: usize, current: &[St], config: &Config) -> bool {
+        let name = config.states[current[c] as usize].name.trim();
+        self.intact(c)
+            && name.len() == 2
+            && name.starts_with('F')
+            && matches!(name.chars().nth(1), Some('A' | 'B' | 'C' | 'L' | 'M' | 'Q' | 'R'))
+    }
+
     fn dump_frozen(&self, current: &[St], config: &Config) {
         let mut row = String::from("F:");
         for c in 1..current.len() - 1 {
             let width = config.states[current[c] as usize].name.len();
-            let rule_frozen = if self.frozen[c] {
-                true
-            } else {
-                let name = config.states[current[c] as usize].name.trim();
-                self.intact(c)
-                    && name.len() == 2
-                    && name.starts_with('F')
-                    && matches!(name.chars().nth(1), Some('A' | 'B' | 'C' | 'L' | 'M' | 'Q' | 'R'))
-            };
+            let rule_frozen = self.frozen[c] || self.rule_frozen(c, current, config);
             let text = if rule_frozen { "*".to_string() } else { String::new() };
             row.push('|');
             if text.chars().count() < width {
@@ -2138,6 +2328,7 @@ fn simulate_fault(
     signals: &[PlannedSignal],
     dump: bool,
     color: bool,
+    mut trace: Option<&mut Trace>,
 ) -> usize {
     let n = current.len() - 2;
     let mut t = 0;
@@ -2182,6 +2373,16 @@ fn simulate_fault(
             }
         }
         ff.premerge(&current[..]);
+        if let Some(tr) = trace.as_deref_mut() {
+            for sig in signals {
+                if sig.time == t {
+                    let name = config.states[sig.value as usize].name.trim();
+                    let dir = if sig.to_left { "R→L" } else { "L→R" };
+                    tr.notes.push((t, format!("{}@cell{} ({})", name, sig.cell, dir)));
+                }
+            }
+            tr.push(current, Some(ff), config);
+        }
         if dump {
             // 計画信号の提示時刻の注記(どの信号がどの故障区間に乗ったかを
             // ダンプ上で追えるようにする。freeze_tools のパーサは
@@ -2283,6 +2484,7 @@ fn batch_run_layout(config: &Config, n: usize, spec: &str, a3: bool, pure: bool)
         &signals,
         false,
         false,
+        None,
     );
     Ok((fired_intact(&current, &mask, config.firing), t, signals.len()))
 }
@@ -2365,6 +2567,8 @@ fn main() {
     let mut fault_arg: Option<String> = None;
     let mut steps_arg: Option<usize> = None;
     let mut batch_arg: Option<String> = None;
+    let mut html_arg: Option<String> = None;
+    let mut json_arg: Option<String> = None;
     let mut injections: Vec<(Ctrl, usize, usize)> = vec![];
     let mut wallsets: Vec<(String, usize)> = vec![];
 
@@ -2395,6 +2599,9 @@ fn main() {
         "  -d, --dump            1 ステップごとの途中経過を出力(ruby -d と同書式)\n",
         "                        (-f/--inject 時は R:/L:/F: 凍結行も追加)\n",
         "  -c, --color           ダンプを ANSI 色付きに(-c は -d を兼ねる)\n",
+        "  --html <file>         時空図を見るブラウザ UI(自己完結 HTML)を書き出す\n",
+        "                        (-d と同じ内容: 状態行、R:/L: 線、凍結、sig: 注記)\n",
+        "  --json <file>         同じ内容を JSON で書き出す(viewer.html で開ける)\n",
         "  -h, --help            このメッセージ"
     );
 
@@ -2416,7 +2623,7 @@ fn main() {
             "--strict" => strict_mode = true,
             "--a3" => a3_mode = true,
             "--pure" => pure_mode = true,
-            "-r" | "--rule" | "-s" | "--size" | "-f" | "--fault" | "--inject" | "--wallset" | "-t" | "--steps" | "--batch" => {
+            "-r" | "--rule" | "-s" | "--size" | "-f" | "--fault" | "--inject" | "--wallset" | "-t" | "--steps" | "--batch" | "--html" | "--json" => {
                 i += 1;
                 let value = match args.get(i) {
                     Some(v) => v,
@@ -2442,6 +2649,10 @@ fn main() {
                     }
                 } else if opt == "-f" || opt == "--fault" {
                     fault_arg = Some(value.clone());
+                } else if opt == "--html" {
+                    html_arg = Some(value.clone());
+                } else if opt == "--json" {
+                    json_arg = Some(value.clone());
                 } else if opt == "--wallset" {
                     // --wallset STATE@t: 時刻 t に右壁の提示状態を STATE に変える
                     let parts: Vec<&str> = value.split('@').collect();
@@ -2645,14 +2856,26 @@ fn main() {
         if pure_mode && !a3_mode {
             eprintln!("warning: --pure is designed for --a3 (A1/A2 injections are not supported in pure mode)");
         }
+        // 純粋シフト線の規則表(PL/PR/PJ/B1/B2 行)を持たないファイルでは境界セルの
+        // 鍵が引けず必ず NOT SYNCED になる(full/基底の規則表との取り違えが多い)。
+        if pure_mode && config.bmap.is_empty() {
+            eprintln!(
+                "error: --pure needs the pure-mode rule table (PL/PR/PJ/B1/B2 lines): {} has none.
+       use balzer-freeze-pure.rul.txt (generate with `python rust/pure_tools.py add_pure`)",
+                rule_file
+            );
+            std::process::exit(1);
+        }
 
         // A1/A2 の信号スケジュールを区間構造から組み立てる
+        let mut a1_notes: Vec<String> = vec![];
         let signals: Vec<PlannedSignal> = match &analysis {
             Some(a) if signal_only => {
                 let (plan, notes) = plan_a1_signals(a, &config, a3_mode);
                 for note in &notes {
                     println!("a1: {}", note);
                 }
+                a1_notes = notes;
                 plan
             }
             _ => vec![],
@@ -2694,6 +2917,9 @@ fn main() {
         let start = Instant::now();
         let mut current = first_line(cell_size, &config);
         let mut next_cells = new_line(cell_size, &config);
+        let want_trace = html_arg.is_some() || json_arg.is_some();
+        let mut trace = Trace::new();
+        trace.header = a1_notes.iter().map(|x| format!("a1: {}", x)).collect();
         let t = simulate_fault(
             &mut current,
             &mut next_cells,
@@ -2705,12 +2931,27 @@ fn main() {
             &signals,
             dump_mode,
             color_mode,
+            if want_trace { Some(&mut trace) } else { None },
         );
 
-        if fired_intact(&current, &mask, config.firing) {
+        let synced = fired_intact(&current, &mask, config.firing);
+        if synced {
             println!("SYNCED (intact cells) at t={}", t);
         } else {
             println!("NOT SYNCED (stopped at t={})", t);
+        }
+        if want_trace {
+            let meta: Vec<(&str, String)> = vec![
+                ("n", cell_size.to_string()),
+                ("faults", json_str(fault_arg.as_deref().unwrap_or(""))),
+                ("a3", a3_mode.to_string()),
+                ("pure", pure_mode.to_string()),
+                ("synced", synced.to_string()),
+                ("t", t.to_string()),
+                ("rule", json_str(&rule_file)),
+                ("cmd", json_str(&args[1..].join(" "))),
+            ];
+            write_trace_outputs(&html_arg, &json_arg, &trace, &config, &mask, &meta, pure_mode);
         }
 
         let end = start.elapsed();
@@ -2733,11 +2974,39 @@ fn main() {
     let start = Instant::now();
     let end;
 
-    if dump_mode {
+    let want_trace = html_arg.is_some() || json_arg.is_some();
+    if dump_mode || want_trace {
         // ダンプ本体が初期状態と最終状態を出すので、debug 表示は重複になる
         // この分岐では出さない
-        simulate_dump(&mut current, &mut next_cells, &config, cell_size, color_mode);
+        let mut trace = Trace::new();
+        let t = simulate_dump(
+            &mut current,
+            &mut next_cells,
+            &config,
+            cell_size,
+            dump_mode,
+            color_mode,
+            if want_trace { Some(&mut trace) } else { None },
+        );
         end = start.elapsed();
+        if want_trace {
+            let synced = fired(&current, config.firing);
+            if !synced {
+                println!("NOT SYNCED");
+            }
+            let mask = vec![false; cell_size + 2];
+            let meta: Vec<(&str, String)> = vec![
+                ("n", cell_size.to_string()),
+                ("faults", json_str("")),
+                ("a3", "false".to_string()),
+                ("pure", "false".to_string()),
+                ("synced", synced.to_string()),
+                ("t", t.to_string()),
+                ("rule", json_str(&rule_file)),
+                ("cmd", json_str(&args[1..].join(" "))),
+            ];
+            write_trace_outputs(&html_arg, &json_arg, &trace, &config, &mask, &meta, false);
+        }
     } else {
         #[cfg(debug_assertions)]
         dumpln(&current, &config);

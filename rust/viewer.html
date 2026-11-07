@@ -1,0 +1,564 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FSSP 時空図</title>
+<style>
+  :root {
+    --bg: #15171c; --panel: #1e2127; --panel2: #262a32; --line: #353a44;
+    --fg: #e6e8ec; --muted: #9aa1ad; --accent: #5aa9ff; --warn: #ff8a5a; --ok: #58d68d;
+    --grid: #0c0d10; --fault-hatch: #2a2d35; --dim: rgba(10,11,14,0.72);
+  }
+  :root[data-theme="light"] {
+    --bg: #f3f4f6; --panel: #ffffff; --panel2: #eef0f3; --line: #d4d8df;
+    --fg: #1d2129; --muted: #5f6672; --accent: #1f6fd6; --warn: #d05a2a; --ok: #1f9a55;
+    --grid: #c9ccd3; --fault-hatch: #d9dce2; --dim: rgba(243,244,246,0.75);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
+    font: 13px/1.45 system-ui, "Segoe UI", "Yu Gothic UI", "Hiragino Sans", sans-serif; }
+  body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px;
+    padding: 8px 14px; background: var(--panel); border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 15px; margin: 0 6px 0 0; font-weight: 600; }
+  .chip { display: inline-block; padding: 2px 8px; border-radius: 999px; background: var(--panel2);
+    border: 1px solid var(--line); color: var(--fg); font-size: 12px; white-space: nowrap; }
+  .chip.ok { border-color: var(--ok); color: var(--ok); }
+  .chip.ng { border-color: var(--warn); color: var(--warn); }
+  .cmd { color: var(--muted); font-family: ui-monospace, Consolas, monospace; font-size: 11px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 46vw; }
+  .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px;
+    padding: 6px 14px; background: var(--panel); border-bottom: 1px solid var(--line); }
+  .group { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .group label { color: var(--muted); font-size: 12px; }
+  button { background: var(--panel2); color: var(--fg); border: 1px solid var(--line); border-radius: 6px;
+    padding: 3px 9px; cursor: pointer; font: inherit; }
+  button:hover { border-color: var(--accent); }
+  button.on { border-color: var(--accent); color: var(--accent); }
+  input[type=range] { width: 120px; }
+  input[type=text], select { background: var(--panel2); color: var(--fg); border: 1px solid var(--line);
+    border-radius: 6px; padding: 3px 7px; font: inherit; }
+  input[type=text] { width: 150px; }
+  main { flex: 1; display: flex; min-height: 0; }
+  #view { position: relative; flex: 1; overflow: auto; background: var(--grid); }
+  #spacer { position: absolute; left: 0; top: 0; width: 1px; height: 1px; }
+  #cv { position: sticky; left: 0; top: 0; display: block; }
+  aside { width: 330px; min-width: 330px; border-left: 1px solid var(--line); background: var(--panel);
+    overflow: auto; padding: 10px 12px; display: flex; flex-direction: column; gap: 14px; }
+  aside h2 { font-size: 12px; margin: 0 0 6px; color: var(--muted); font-weight: 600; letter-spacing: .04em;
+    text-transform: uppercase; }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; font-size: 12px; }
+  .kv div:nth-child(odd) { color: var(--muted); }
+  .st { display: inline-block; padding: 1px 6px; border-radius: 4px; font-family: ui-monospace, Consolas, monospace;
+    font-size: 12px; border: 1px solid rgba(0,0,0,.25); }
+  .trans { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+  .trans .arrow { color: var(--muted); }
+  .trans .lbl { color: var(--muted); font-size: 11px; }
+  .key { font-family: ui-monospace, Consolas, monospace; font-size: 12px; background: var(--panel2);
+    padding: 4px 8px; border-radius: 6px; margin-top: 6px; word-break: break-all; }
+  .note { color: var(--muted); font-size: 11px; margin-top: 4px; }
+  ul.list { list-style: none; margin: 0; padding: 0; max-height: 200px; overflow: auto; font-size: 12px; }
+  ul.list li { padding: 2px 4px; cursor: pointer; border-radius: 4px; }
+  ul.list li:hover { background: var(--panel2); }
+  #legend { display: flex; flex-wrap: wrap; gap: 4px; max-height: 320px; overflow: auto; }
+  #legend .st { cursor: pointer; opacity: .9; }
+  #legend .st.sel { outline: 2px solid var(--accent); }
+  #legend .cnt { color: var(--muted); font-size: 10px; margin-left: 3px; }
+  #tip { position: fixed; pointer-events: none; z-index: 10; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 6px; padding: 6px 8px; font-size: 12px; box-shadow: 0 4px 16px rgba(0,0,0,.35); display: none;
+    max-width: 320px; }
+  #tip .st { margin-right: 4px; }
+  #drop { position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
+    color: var(--muted); font-size: 14px; flex-direction: column; gap: 8px; }
+  #drop.show { display: flex; }
+  .hint { color: var(--muted); font-size: 11px; }
+  kbd { background: var(--panel2); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; font-size: 11px; }
+  @media (max-width: 800px) { aside { display: none; } .cmd { display: none; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>FSSP 時空図</h1>
+  <span id="meta"></span>
+  <span class="cmd" id="cmd"></span>
+  <span style="flex:1"></span>
+  <button id="theme" title="配色">配色</button>
+</header>
+<div class="toolbar">
+  <div class="group"><label>ズーム</label><input type="range" id="zoom" min="3" max="90" value="44"></div>
+  <div class="group">
+    <label>時刻</label>
+    <button id="first" title="最初 (Home)">⏮</button>
+    <button id="prev" title="1 歩戻る (←)">◀</button>
+    <input type="range" id="tslider" min="0" max="0" value="0" style="width:200px">
+    <button id="next" title="1 歩進む (→)">▶</button>
+    <button id="last" title="最後 (End)">⏭</button>
+    <span id="tlabel" style="min-width:90px;font-family:ui-monospace,Consolas,monospace"></span>
+    <button id="play" title="再生/停止 (Space)">再生</button>
+    <select id="speed"><option value="600">遅</option><option value="250" selected>中</option><option value="80">速</option></select>
+  </div>
+  <div class="group"><button id="reveal" class="on" title="時刻 t までの行だけ描く(オフで全行)">t まで表示</button></div>
+  <div class="group"><label>強調</label><input type="text" id="filter" placeholder="状態名(部分一致、, 区切り)"><button id="clearf">×</button></div>
+  <div class="group"><label>故障セル</label>
+    <select id="linemode"><option value="both">右行き/左行き</option><option value="r">右行き線のみ</option><option value="l">左行き線のみ</option></select>
+  </div>
+  <div class="group"><button id="frozenmark" class="on" title="凍結セルに * を出す">凍結 *</button></div>
+  <div class="group"><button id="gridtoggle" class="on">境界線</button></div>
+  <div class="group"><label>画像</label>
+    <select id="pngscale" title="px / セル"><option value="1">1 px</option><option value="2">2 px</option><option value="3" selected>3 px</option><option value="4">4 px</option><option value="8">8 px</option><option value="zoom">現在のズーム</option></select>
+    <button id="png" title="時空図全体を PNG に保存">PNG 保存</button>
+  </div>
+</div>
+<main>
+  <div id="view">
+    <div id="spacer"></div>
+    <canvas id="cv"></canvas>
+    <div id="drop">
+      <div>fssp --json で書き出した JSON をここにドロップするか、ファイルを選ぶ</div>
+      <input type="file" id="file" accept=".json,application/json">
+    </div>
+  </div>
+  <aside>
+    <section>
+      <h2>選択セル</h2>
+      <div id="sel" class="hint">セルをクリックすると、その時刻の状態と 1 歩前の入力(遷移規則の鍵)を表示します。
+        <br><kbd>←</kbd><kbd>→</kbd> 時刻、<kbd>Space</kbd> 再生、選択中は <kbd>↑</kbd><kbd>↓</kbd><kbd>Shift+←→</kbd> で移動。</div>
+    </section>
+    <section>
+      <h2>注記</h2>
+      <ul class="list" id="notes"></ul>
+    </section>
+    <section>
+      <h2>凡例(出現状態、クリックで強調)</h2>
+      <div id="legend"></div>
+    </section>
+  </aside>
+</main>
+<div id="tip"></div>
+<script>
+'use strict';
+const EMBEDDED = /*__FSSP_DATA__*/null;
+
+const $ = id => document.getElementById(id);
+const view = $('view'), spacer = $('spacer'), cv = $('cv'), ctx = cv.getContext('2d'), tip = $('tip');
+const LEFT = 44, TOP = 24;   // 時刻列・セル番号行の幅
+let D = null;                 // データ
+let cw = 44, rh = 26;         // セル幅・行高
+let tcur = 0, reveal = true, playing = false, timer = null;
+let hl = new Set();           // 強調する状態番号
+let filterText = '';
+let lineMode = 'both', showFrozen = true, showGrid = true;
+let hover = null, sel = null; // {t, c}(c は 1 始まり)
+let used = new Map();         // 状態番号 → 出現数
+
+function stName(i) { return D.states[i] ? D.states[i].n : ('#' + i); }
+function stBg(i) { return D.states[i] ? D.states[i].bg : '#808080'; }
+function stFg(i) { return D.states[i] ? D.states[i].fg : '#000'; }
+function chip(i, extra) {
+  const s = document.createElement('span');
+  s.className = 'st' + (extra ? ' ' + extra : '');
+  s.style.background = stBg(i); s.style.color = stFg(i);
+  s.textContent = stName(i);
+  return s;
+}
+
+function load(data) {
+  D = data;
+  $('drop').classList.remove('show');
+  const T = D.rows.length - 1, n = D.rows[0].length;
+  const m = D.meta;
+  const meta = $('meta'); meta.innerHTML = '';
+  const addChip = (txt, cls) => { const s = document.createElement('span'); s.className = 'chip' + (cls ? ' ' + cls : ''); s.textContent = txt; meta.appendChild(s); };
+  addChip('n = ' + n);
+  if (m.faults) addChip('故障 ' + m.faults);
+  addChip(m.pure ? 'A3 / 純粋シフト線' : (m.a3 ? 'A3' : (m.faults ? 'A1/A2' : '通常')));
+  addChip(m.synced ? ('SYNCED t=' + m.t) : ('NOT SYNCED t=' + m.t), m.synced ? 'ok' : 'ng');
+  if (m.rule) addChip(m.rule.replace(/^.*[\\/]/, ''));
+  $('cmd').textContent = m.cmd ? 'fssp ' + m.cmd : '';
+  $('cmd').title = m.cmd || '';
+  $('tslider').max = T; tcur = T; $('tslider').value = T;
+  // 出現状態
+  used = new Map();
+  const bump = i => used.set(i, (used.get(i) || 0) + 1);
+  for (let t = 0; t <= T; t++) for (let c = 0; c < n; c++) {
+    if (D.mask[c]) { bump(D.toRight[t][c]); bump(D.toLeft[t][c]); } else bump(D.rows[t][c]);
+  }
+  const lg = $('legend'); lg.innerHTML = '';
+  [...used.entries()].sort((a, b) => b[1] - a[1]).forEach(([i, k]) => {
+    const s = chip(i); const c = document.createElement('span'); c.className = 'cnt'; c.textContent = k; s.appendChild(c);
+    s.dataset.i = i;
+    s.onclick = () => { if (hl.has(i)) hl.delete(i); else hl.add(i); filterText = ''; $('filter').value = ''; syncLegend(); draw(); };
+    lg.appendChild(s);
+  });
+  const nl = $('notes'); nl.innerHTML = '';
+  (D.header || []).forEach(h => { const li = document.createElement('li'); li.textContent = h; li.style.color = 'var(--muted)'; nl.appendChild(li); });
+  (D.notes || []).forEach(nt => {
+    const li = document.createElement('li'); li.textContent = 't=' + nt.t + '  sig: ' + nt.text;
+    li.onclick = () => { setT(nt.t); scrollToRow(nt.t); };
+    nl.appendChild(li);
+  });
+  if (!D.header.length && !D.notes.length) { const li = document.createElement('li'); li.className = 'hint'; li.textContent = '(なし)'; nl.appendChild(li); }
+  sel = null; hover = null; renderSel();
+  layout();
+}
+
+function syncLegend() { for (const s of $('legend').children) s.classList.toggle('sel', hl.has(+s.dataset.i)); }
+
+function layout() {
+  if (!D) return;
+  const T = D.rows.length, n = D.rows[0].length;
+  cw = +$('zoom').value; rh = cw >= 14 ? Math.max(18, Math.round(cw * 0.6)) : Math.max(3, Math.round(cw * 0.8));
+  spacer.style.width = (LEFT + n * cw + 20) + 'px';
+  spacer.style.height = (TOP + T * rh + 20) + 'px';
+  resize();
+}
+function resize() {
+  const w = view.clientWidth, h = view.clientHeight, dpr = window.devicePixelRatio || 1;
+  cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
+  cv.style.width = w + 'px'; cv.style.height = h + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  draw();
+}
+
+function matches(i) {
+  if (hl.size) return hl.has(i);
+  if (filterText) {
+    const nm = stName(i);
+    return filterText.split(',').map(x => x.trim()).filter(Boolean).some(x => nm.includes(x));
+  }
+  return true;
+}
+function anyFilter() { return hl.size > 0 || filterText.trim() !== ''; }
+
+function fitFont(px) { return Math.max(8, Math.min(14, Math.floor(px * 0.42))); }
+
+// 範囲 [t0,t1]×[c0,c1] のセルを g に描く(画面描画と PNG 書き出しで共用)。
+// ox/oy は描画原点(セル (t,c) の左上 = (ox + c*cwv, oy + t*rhv))。
+function renderCells(g, cwv, rhv, ox, oy, t0, t1, c0, c1, col) {
+  const font = fitFont(Math.min(cwv, rhv * 1.6));
+  const filt = anyFilter();
+  const half = rhv / 2;
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  const cellText = (txt, x, y, w, h, fg, fs) => {
+    g.font = fs + 'px ui-monospace, Consolas, monospace';
+    let s = txt;
+    const maxw = w - 4;
+    while (s.length > 1 && g.measureText(s).width > maxw) s = s.slice(0, -1);
+    if (g.measureText(s).width > maxw) return;
+    g.fillStyle = fg; g.fillText(s, x + w / 2, y + h / 2 + 0.5);
+  };
+  for (let t = t0; t <= t1; t++) {
+    const y = oy + t * rhv;
+    for (let c = c0; c <= c1; c++) {
+      const x = ox + c * cwv;
+      if (D.mask[c]) {
+        g.fillStyle = col.hatch; g.fillRect(x, y, cwv, rhv);
+        const r = D.toRight[t][c], l = D.toLeft[t][c];
+        const pad = cwv >= 8 ? 2 : 0, pv = cwv >= 8 ? 1 : 0;
+        if (lineMode === 'both') {
+          g.fillStyle = stBg(r); g.fillRect(x + pad, y + pv, cwv - 2 * pad, half - pv - 0.5);
+          g.fillStyle = stBg(l); g.fillRect(x + pad, y + half + 0.5, cwv - 2 * pad, half - pv - 0.5);
+          if (cwv >= 26) {
+            cellText('\u2192' + stName(r), x + 2, y + 1, cwv - 4, half - 1, stFg(r), Math.min(font, Math.floor(half * 0.9)));
+            cellText(stName(l) + '\u2190', x + 2, y + half, cwv - 4, half - 1, stFg(l), Math.min(font, Math.floor(half * 0.9)));
+          }
+          if (filt && !matches(r)) { g.fillStyle = col.dim; g.fillRect(x, y, cwv, half); }
+          if (filt && !matches(l)) { g.fillStyle = col.dim; g.fillRect(x, y + half, cwv, half); }
+        } else {
+          const v = lineMode === 'r' ? r : l;
+          g.fillStyle = stBg(v); g.fillRect(x + pad, y + pv, cwv - 2 * pad, rhv - 2 * pv);
+          if (cwv >= 22) cellText(lineMode === 'r' ? '\u2192' + stName(v) : stName(v) + '\u2190', x + 2, y, cwv - 4, rhv, stFg(v), font);
+          if (filt && !matches(v)) { g.fillStyle = col.dim; g.fillRect(x, y, cwv, rhv); }
+        }
+      } else {
+        const v = D.rows[t][c];
+        g.fillStyle = stBg(v); g.fillRect(x, y, cwv, rhv);
+        if (cwv >= 22) cellText(stName(v), x, y, cwv, rhv, stFg(v), font);
+        if (filt && !matches(v)) { g.fillStyle = col.dim; g.fillRect(x, y, cwv, rhv); }
+        if (showFrozen && cwv >= 14 && D.frozen[t][c]) {
+          g.font = 'bold ' + Math.min(12, font + 2) + 'px sans-serif'; g.fillStyle = stFg(v);
+          g.textAlign = 'right'; g.fillText('*', x + cwv - 2, y + Math.min(8, rhv / 3)); g.textAlign = 'center';
+        }
+      }
+      if (showGrid && cwv >= 8) { g.strokeStyle = col.grid; g.lineWidth = 1; g.strokeRect(x + 0.5, y + 0.5, cwv - 1, rhv - 1); }
+    }
+  }
+}
+
+function themeColors() {
+  const css = getComputedStyle(document.documentElement);
+  const v = k => css.getPropertyValue(k).trim();
+  return { grid: v('--grid'), fg: v('--fg'), muted: v('--muted'), hatch: v('--fault-hatch'), dim: v('--dim'), acc: v('--accent'), panel: v('--panel') };
+}
+
+function draw() {
+  if (!D) return;
+  const T = D.rows.length, n = D.rows[0].length;
+  const sx = view.scrollLeft, sy = view.scrollTop, W = view.clientWidth, H = view.clientHeight;
+  const col = themeColors();
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = col.grid; ctx.fillRect(0, 0, W, H);
+  const tmax = reveal ? tcur : T - 1;
+  const t0 = Math.max(0, Math.floor((sy) / rh)), t1 = Math.min(T - 1, tmax, Math.ceil((sy + H - TOP) / rh));
+  const c0 = Math.max(0, Math.floor((sx) / cw)), c1 = Math.min(n - 1, Math.ceil((sx + W - LEFT) / cw));
+  if (t1 >= t0) renderCells(ctx, cw, rh, LEFT - sx, TOP - sy, t0, t1, c0, c1, col);
+  // 現在時刻の行
+  if (tcur >= t0 - 1 && tcur <= t1 + 1) {
+    const y = TOP + tcur * rh - sy;
+    ctx.strokeStyle = col.acc; ctx.lineWidth = 2; ctx.strokeRect(LEFT - sx + 0.5, y + 0.5, n * cw - 1, rh - 1);
+  }
+  // 注記のマーカー
+  (D.notes || []).forEach(nt => { const y = TOP + nt.t * rh - sy + rh / 2; ctx.fillStyle = col.acc;
+    ctx.beginPath(); ctx.moveTo(LEFT - 10, y - 4); ctx.lineTo(LEFT - 3, y); ctx.lineTo(LEFT - 10, y + 4); ctx.fill(); });
+  // 選択・ホバー
+  const outline = (p, c, lw) => { if (!p) return; const x = LEFT + (p.c - 1) * cw - sx, y = TOP + p.t * rh - sy;
+    ctx.strokeStyle = c; ctx.lineWidth = lw; ctx.strokeRect(x + 1, y + 1, cw - 2, rh - 2); };
+  if (sel && sel.t > 0) {
+    for (let d = -1; d <= 1; d++) { const c = sel.c + d; if (c >= 1 && c <= n && sel.t - 1 <= tmax) outline({ t: sel.t - 1, c }, '#ffd54a', 2); }
+  }
+  outline(sel, '#ffffff', 3);
+  if (hover && !(sel && hover.t === sel.t && hover.c === sel.c)) outline(hover, col.acc, 2);
+  // 固定の見出し(セル番号行・時刻列)
+  drawLabels(ctx, cw, rh, LEFT, TOP, sx, sy, W, H, t0, t1, c0, c1, col, true);
+}
+
+// セル番号行と時刻列。sticky=true なら画面の左上に固定(スクロール分を引く)。
+function drawLabels(g, cwv, rhv, left, top, sx, sy, W, H, t0, t1, c0, c1, col, sticky) {
+  g.fillStyle = col.panel; g.fillRect(0, 0, W, top); g.fillRect(0, 0, left, H);
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.font = '11px ui-monospace, Consolas, monospace';
+  for (let c = c0; c <= c1; c++) {
+    const x = left + c * cwv - sx + cwv / 2;
+    if (cwv >= 20 || (cwv >= 8 && c % 5 === 0) || (c + 1) % 50 === 0) { g.fillStyle = D.mask[c] ? '#ff8a5a' : col.muted; g.fillText(String(c + 1), x, top / 2); }
+  }
+  g.textAlign = 'right';
+  for (let t = t0; t <= t1; t++) {
+    const y = top + t * rhv - sy + rhv / 2;
+    if (rhv >= 16 || (rhv >= 6 && t % 5 === 0) || t % 50 === 0) { g.fillStyle = (sticky && t === tcur) ? col.acc : col.muted; g.fillText('t=' + t, left - 6, y); }
+  }
+  g.textAlign = 'center';
+  g.fillStyle = col.panel; g.fillRect(0, 0, left, top);
+}
+
+// PNG 書き出し: 時空図全体(表示中の強調・線の表示・凍結印・境界線を反映)を
+// 1 枚の canvas に描いてダウンロードする。scale は px/セル('zoom' なら現在のズーム)。
+function exportPng(scaleSel) {
+  if (!D) return;
+  const T = D.rows.length, n = D.rows[0].length;
+  const cwv = scaleSel === 'zoom' ? cw : +scaleSel;
+  const rhv = scaleSel === 'zoom' ? rh : (cwv >= 14 ? Math.max(18, Math.round(cwv * 0.6)) : Math.max(1, Math.round(cwv * 0.8)));
+  const labels = cwv >= 8;
+  const left = labels ? LEFT : 0, top = labels ? TOP : 0;
+  const W = left + n * cwv, H = top + T * rhv;
+  if (W > 32000 || H > 32000 || W * H > 250e6) { alert('画像が大きすぎます(' + W + '×' + H + ')。縮尺を下げてください。'); return; }
+  const off = document.createElement('canvas'); off.width = W; off.height = H;
+  const g = off.getContext('2d');
+  const col = themeColors();
+  g.fillStyle = col.grid; g.fillRect(0, 0, W, H);
+  const tmax = reveal ? tcur : T - 1;
+  renderCells(g, cwv, rhv, left, top, 0, tmax, 0, n - 1, col);
+  if (labels) drawLabels(g, cwv, rhv, left, top, 0, 0, W, H, 0, T - 1, 0, n - 1, col, false);
+  const m = D.meta;
+  const name = 'fssp-n' + n + (m.faults ? '-f' + m.faults.replace(/[^0-9a-z]/gi, '_') : '') + (m.pure ? '-pure' : (m.a3 ? '-a3' : '')) + '-x' + cwv + '.png';
+  const btn = $('png'); btn.disabled = true; btn.textContent = '書き出し中…';
+  off.toBlob(blob => {
+    btn.disabled = false; btn.textContent = 'PNG 保存';
+    if (!blob) { alert('PNG を生成できません'); return; }
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = name; document.body.appendChild(a); a.click();
+    setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 2000);
+  }, 'image/png');
+}
+
+function cellAt(ev) {
+  const r = view.getBoundingClientRect();
+  const x = ev.clientX - r.left + view.scrollLeft - LEFT, y = ev.clientY - r.top + view.scrollTop - TOP;
+  if (x < 0 || y < 0) return null;
+  const c = Math.floor(x / cw) + 1, t = Math.floor(y / rh);
+  const T = D.rows.length, n = D.rows[0].length;
+  if (c < 1 || c > n || t < 0 || t >= T) return null;
+  if (reveal && t > tcur) return null;
+  return { t, c };
+}
+
+// 入力の説明: 時刻 t−1 のセル c の左右入力(故障側は線の内容)
+function inputsOf(t, c) {
+  const n = D.rows[0].length, tp = t - 1;
+  const ext = D.states.findIndex(s => s.k === 'external');
+  const left = c - 1 >= 1 ? (D.mask[c - 2] ? { v: D.toRight[tp][c - 2], line: 'R' } : { v: D.rows[tp][c - 2] }) : { v: ext, wall: true };
+  const right = c + 1 <= n ? (D.mask[c] ? { v: D.toLeft[tp][c], line: 'L' } : { v: D.rows[tp][c] }) : { v: ext, wall: true };
+  const cur = D.mask[c - 1] ? null : D.rows[tp][c - 1];
+  return { left, right, cur };
+}
+
+function renderSel() {
+  const box = $('sel');
+  if (!sel) return;
+  const { t, c } = sel, n = D.rows[0].length, fault = D.mask[c - 1];
+  box.innerHTML = '';
+  const kv = document.createElement('div'); kv.className = 'kv';
+  const row = (k, v) => { const a = document.createElement('div'); a.textContent = k; const b = document.createElement('div'); if (typeof v === 'string') b.textContent = v; else b.appendChild(v); kv.appendChild(a); kv.appendChild(b); };
+  row('時刻', 't = ' + t);
+  row('セル', c + (fault ? '(故障)' : ''));
+  if (fault) {
+    row('右行き線', chip(D.toRight[t][c - 1]));
+    row('左行き線', chip(D.toLeft[t][c - 1]));
+  } else {
+    row('状態', chip(D.rows[t][c - 1]));
+    if (D.frozen[t][c - 1]) row('凍結', '*');
+  }
+  box.appendChild(kv);
+  if (t === 0) { const p = document.createElement('div'); p.className = 'note'; p.textContent = '初期配置'; box.appendChild(p); return; }
+  const h = document.createElement('div'); h.className = 'note'; h.textContent = '1 歩前(t = ' + (t - 1) + ')からの遷移'; box.appendChild(h);
+  if (fault) {
+    // 線は隣の生の状態(または隣の線)を写す
+    const tr = document.createElement('div'); tr.className = 'trans';
+    const lsrc = c - 1 >= 1 ? (D.mask[c - 2] ? D.toRight[t - 1][c - 2] : D.rows[t - 1][c - 2]) : null;
+    const rsrc = c + 1 <= n ? (D.mask[c] ? D.toLeft[t - 1][c] : D.rows[t - 1][c]) : null;
+    const lbl = s => { const e = document.createElement('span'); e.className = 'lbl'; e.textContent = s; return e; };
+    const arr = () => { const e = document.createElement('span'); e.className = 'arrow'; e.textContent = '→'; return e; };
+    if (lsrc !== null) { tr.appendChild(lbl('左隣 ' + (c - 1))); tr.appendChild(chip(lsrc)); tr.appendChild(arr()); tr.appendChild(lbl('右行き線')); tr.appendChild(chip(D.toRight[t][c - 1])); }
+    box.appendChild(tr);
+    const tr2 = document.createElement('div'); tr2.className = 'trans';
+    if (rsrc !== null) { tr2.appendChild(lbl('右隣 ' + (c + 1))); tr2.appendChild(chip(rsrc)); tr2.appendChild(arr()); tr2.appendChild(lbl('左行き線')); tr2.appendChild(chip(D.toLeft[t][c - 1])); }
+    box.appendChild(tr2);
+    if (!D.meta.pure) { const p = document.createElement('div'); p.className = 'note'; p.textContent = '従来モードの故障区間は始端 pickup・折り返し・射影を含むため、線の内容は単純な写しとは限りません。'; box.appendChild(p); }
+    return;
+  }
+  const inp = inputsOf(t, c);
+  const tr = document.createElement('div'); tr.className = 'trans';
+  const lbl = s => { const e = document.createElement('span'); e.className = 'lbl'; e.textContent = s; return e; };
+  tr.appendChild(lbl(inp.left.wall ? '壁' : (inp.left.line ? '右行き線' : '左 ' + (c - 1)))); tr.appendChild(chip(inp.left.v));
+  tr.appendChild(lbl('自')); tr.appendChild(chip(inp.cur));
+  tr.appendChild(lbl(inp.right.wall ? '壁' : (inp.right.line ? '左行き線' : '右 ' + (c + 1)))); tr.appendChild(chip(inp.right.v));
+  const a = document.createElement('span'); a.className = 'arrow'; a.textContent = '⇒'; tr.appendChild(a);
+  tr.appendChild(chip(D.rows[t][c - 1]));
+  box.appendChild(tr);
+  let l = inp.left.v, r = inp.right.v, flags = 0;
+  if (D.meta.pure && D.pl) {
+    if (inp.left.line) { l = D.pl[l]; flags |= 1; } else if (!inp.left.wall) l = D.pj[l];
+    if (inp.right.line) { r = D.pr[r]; flags |= 2; } else if (!inp.right.wall) r = D.pj[r];
+    if (flags || l !== inp.left.v || r !== inp.right.v) {
+      const p = document.createElement('div'); p.className = 'trans';
+      p.appendChild(lbl('射影後' + (flags ? '(B' + flags + ')' : ''))); p.appendChild(chip(l)); p.appendChild(chip(inp.cur)); p.appendChild(chip(r));
+      box.appendChild(p);
+    }
+  }
+  const key = document.createElement('div'); key.className = 'key';
+  key.textContent = (flags ? 'B' + flags + ':' : '') + stName(l) + '##' + stName(inp.cur) + '##' + stName(r) + '->' + stName(D.rows[t][c - 1]);
+  key.title = 'クリックでコピー';
+  key.style.cursor = 'pointer';
+  key.onclick = () => { try { navigator.clipboard.writeText(key.textContent); } catch (e) {} };
+  box.appendChild(key);
+  if (D.meta.faults && !D.meta.pure && (inp.left.line || inp.right.line)) {
+    const p = document.createElement('div'); p.className = 'note'; p.textContent = '従来モードの境界セルは故障セル処理(先読み・射影)を経た入力で遷移するため、ここに出す鍵は表示上の近似です。'; box.appendChild(p);
+  }
+}
+
+function setT(t) {
+  const T = D.rows.length - 1;
+  tcur = Math.max(0, Math.min(T, t));
+  $('tslider').value = tcur;
+  $('tlabel').textContent = 't = ' + tcur + ' / ' + T;
+  draw();
+}
+function scrollToRow(t) {
+  const y = TOP + t * rh;
+  if (y < view.scrollTop + TOP || y + rh > view.scrollTop + view.clientHeight) view.scrollTop = Math.max(0, y - view.clientHeight / 2);
+}
+function stop() { playing = false; $('play').textContent = '再生'; $('play').classList.remove('on'); if (timer) clearInterval(timer); timer = null; }
+function play() {
+  if (playing) { stop(); return; }
+  const T = D.rows.length - 1;
+  if (tcur >= T) setT(0);
+  playing = true; $('play').textContent = '停止'; $('play').classList.add('on');
+  timer = setInterval(() => { if (tcur >= T) { stop(); return; } setT(tcur + 1); scrollToRow(tcur); }, +$('speed').value);
+}
+
+// ── イベント ──
+$('zoom').oninput = layout;
+$('tslider').oninput = e => { setT(+e.target.value); };
+$('first').onclick = () => { setT(0); scrollToRow(0); };
+$('last').onclick = () => { setT(D.rows.length - 1); scrollToRow(tcur); };
+$('prev').onclick = () => { setT(tcur - 1); scrollToRow(tcur); };
+$('next').onclick = () => { setT(tcur + 1); scrollToRow(tcur); };
+$('play').onclick = play;
+$('speed').onchange = () => { if (playing) { stop(); play(); } };
+$('reveal').onclick = () => { reveal = !reveal; $('reveal').classList.toggle('on', reveal); draw(); };
+$('filter').oninput = e => { filterText = e.target.value; hl.clear(); syncLegend(); draw(); };
+$('clearf').onclick = () => { filterText = ''; $('filter').value = ''; hl.clear(); syncLegend(); draw(); };
+$('linemode').onchange = e => { lineMode = e.target.value; draw(); };
+$('frozenmark').onclick = () => { showFrozen = !showFrozen; $('frozenmark').classList.toggle('on', showFrozen); draw(); };
+$('gridtoggle').onclick = () => { showGrid = !showGrid; $('gridtoggle').classList.toggle('on', showGrid); draw(); };
+$('png').onclick = () => exportPng($('pngscale').value);
+$('theme').onclick = () => {
+  const cur = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
+  document.documentElement.dataset.theme = cur; try { localStorage.setItem('fssp-theme', cur); } catch (e) {}
+  draw();
+};
+try { const th = localStorage.getItem('fssp-theme'); if (th) document.documentElement.dataset.theme = th; } catch (e) {}
+view.addEventListener('scroll', draw);
+window.addEventListener('resize', resize);
+view.addEventListener('mousemove', ev => {
+  if (!D) return;
+  const p = cellAt(ev);
+  hover = p;
+  if (!p) { tip.style.display = 'none'; draw(); return; }
+  tip.innerHTML = '';
+  const head = document.createElement('div'); head.textContent = 't = ' + p.t + '  セル ' + p.c + (D.mask[p.c - 1] ? '(故障)' : ''); tip.appendChild(head);
+  if (D.mask[p.c - 1]) {
+    const a = document.createElement('div'); a.appendChild(document.createTextNode('右行き線 ')); a.appendChild(chip(D.toRight[p.t][p.c - 1])); tip.appendChild(a);
+    const b = document.createElement('div'); b.appendChild(document.createTextNode('左行き線 ')); b.appendChild(chip(D.toLeft[p.t][p.c - 1])); tip.appendChild(b);
+  } else {
+    const a = document.createElement('div'); a.appendChild(chip(D.rows[p.t][p.c - 1]));
+    if (D.frozen[p.t][p.c - 1]) a.appendChild(document.createTextNode(' 凍結'));
+    tip.appendChild(a);
+    if (p.t > 0) {
+      const inp = inputsOf(p.t, p.c);
+      const b = document.createElement('div'); b.style.marginTop = '3px'; b.appendChild(document.createTextNode('← '));
+      b.appendChild(chip(inp.left.v)); b.appendChild(chip(inp.cur)); b.appendChild(chip(inp.right.v)); tip.appendChild(b);
+    }
+  }
+  tip.style.display = 'block';
+  const tw = tip.offsetWidth, th = tip.offsetHeight;
+  tip.style.left = Math.min(ev.clientX + 14, window.innerWidth - tw - 8) + 'px';
+  tip.style.top = Math.min(ev.clientY + 14, window.innerHeight - th - 8) + 'px';
+  draw();
+});
+view.addEventListener('mouseleave', () => { hover = null; tip.style.display = 'none'; draw(); });
+view.addEventListener('click', ev => {
+  if (!D) return;
+  const p = cellAt(ev);
+  sel = p; renderSel(); draw();
+  if (!p) { $('sel').innerHTML = '<span class="hint">セルをクリックすると、その時刻の状態と 1 歩前の入力を表示します。</span>'; }
+});
+document.addEventListener('keydown', ev => {
+  if (!D || ev.target.tagName === 'INPUT' || ev.target.tagName === 'SELECT') return;
+  const T = D.rows.length - 1, n = D.rows[0].length;
+  if (ev.key === ' ') { ev.preventDefault(); play(); return; }
+  if (ev.key === 'Home') { setT(0); scrollToRow(0); return; }
+  if (ev.key === 'End') { setT(T); scrollToRow(T); return; }
+  if (sel && (ev.key === 'ArrowUp' || ev.key === 'ArrowDown' || (ev.shiftKey && (ev.key === 'ArrowLeft' || ev.key === 'ArrowRight')))) {
+    ev.preventDefault();
+    if (ev.key === 'ArrowUp') sel.t = Math.max(0, sel.t - 1);
+    if (ev.key === 'ArrowDown') sel.t = Math.min(T, sel.t + 1);
+    if (ev.key === 'ArrowLeft') sel.c = Math.max(1, sel.c - 1);
+    if (ev.key === 'ArrowRight') sel.c = Math.min(n, sel.c + 1);
+    if (reveal && sel.t > tcur) setT(sel.t);
+    scrollToRow(sel.t); renderSel(); draw(); return;
+  }
+  if (ev.key === 'ArrowLeft') { ev.preventDefault(); setT(tcur - 1); scrollToRow(tcur); }
+  if (ev.key === 'ArrowRight') { ev.preventDefault(); setT(tcur + 1); scrollToRow(tcur); }
+});
+// JSON の読み込み(viewer.html を単体で開いたとき)
+function loadFile(f) { const rd = new FileReader(); rd.onload = () => { try { load(JSON.parse(rd.result)); setT(D.rows.length - 1); } catch (e) { alert('JSON を読めません: ' + e); } }; rd.readAsText(f); }
+$('file').onchange = e => { if (e.target.files[0]) loadFile(e.target.files[0]); };
+view.addEventListener('dragover', e => { e.preventDefault(); });
+view.addEventListener('drop', e => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f) loadFile(f); });
+
+if (EMBEDDED) { load(EMBEDDED); setT(D.rows.length - 1); scrollToRow(0); }
+else { $('drop').classList.add('show'); }
+</script>
+</body>
+</html>
