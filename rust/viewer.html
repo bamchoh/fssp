@@ -108,6 +108,7 @@
   <div class="group"><label>画像</label>
     <select id="pngscale" title="px / セル"><option value="1">1 px</option><option value="2">2 px</option><option value="3" selected>3 px</option><option value="4">4 px</option><option value="8">8 px</option><option value="zoom">現在のズーム</option></select>
     <button id="png" title="時空図全体を PNG に保存">PNG 保存</button>
+    <button id="svg" title="時空図全体を SVG に保存(同じ色の連続は 1 つの rect にまとめる)">SVG 保存</button>
   </div>
 </div>
 <main>
@@ -341,6 +342,118 @@ function drawLabels(g, cwv, rhv, left, top, sx, sy, W, H, t0, t1, c0, c1, col, s
   g.fillStyle = col.panel; g.fillRect(0, 0, left, top);
 }
 
+// SVG 書き出し: 同じ色が横に続くセルは 1 つの rect にまとめる(状態ごとに CSS
+// クラスで色を持つ)。cwv >= 22 なら状態名の text、cwv >= 8 なら見出しと境界線も出す。
+function exportSvg(scaleSel) {
+  if (!D) return;
+  const T = D.rows.length, n = D.rows[0].length;
+  const cwv = scaleSel === 'zoom' ? cw : +scaleSel;
+  const rhv = scaleSel === 'zoom' ? rh : (cwv >= 14 ? Math.max(18, Math.round(cwv * 0.6)) : Math.max(1, Math.round(cwv * 0.8)));
+  const labels = cwv >= 8, text = cwv >= 22;
+  const left = labels ? LEFT : 0, top = labels ? TOP : 0;
+  const tmax = reveal ? tcur : T - 1;
+  const W = left + n * cwv, H = top + (tmax + 1) * rhv;
+  if (n * (tmax + 1) > 6e6 && !confirm('セル数が ' + (n * (tmax + 1)) + ' です。SVG が非常に大きくなりますが続けますか?')) return;
+  const col = themeColors();
+  const filt = anyFilter();
+  const esc = x => String(x).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const half = rhv / 2;
+  const usedCls = new Set();
+  const out = [];
+  out.push('<?xml version="1.0" encoding="UTF-8"?>');
+  out.push('<svg xmlns="http://www.w3.org/2000/svg" width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '" shape-rendering="crispEdges">');
+  const m = D.meta;
+  out.push('<title>FSSP n=' + n + (m.faults ? ' faults=' + esc(m.faults) : '') + (m.pure ? ' pure' : (m.a3 ? ' a3' : '')) + ' t=' + m.t + '</title>');
+  const body = [];
+  body.push('<rect x="0" y="0" width="' + W + '" height="' + H + '" fill="' + col.grid + '"/>');
+  // 横方向のランレングス: key = クラス名(状態 + 暗転フラグ)
+  const runs = (y, h, items) => {   // items: [{c, cls, dim}] 連続セル列
+    let i = 0;
+    while (i < items.length) {
+      let j = i;
+      while (j + 1 < items.length && items[j + 1].c === items[j].c + 1 && items[j + 1].cls === items[i].cls && items[j + 1].dim === items[i].dim) j++;
+      const x = left + items[i].c * cwv, w = (j - i + 1) * cwv;
+      body.push('<rect x="' + x + '" y="' + y + '" width="' + w + '" height="' + h + '" class="' + items[i].cls + '"/>');
+      usedCls.add(items[i].cls);
+      if (items[i].dim) body.push('<rect x="' + x + '" y="' + y + '" width="' + w + '" height="' + h + '" class="dim"/>');
+      i = j + 1;
+    }
+  };
+  const texts = [];
+  const fs = fitFont(Math.min(cwv, rhv * 1.6));
+  const addText = (x, y, w, h, str, fg, size) => {
+    texts.push('<text x="' + (x + w / 2) + '" y="' + (y + h / 2) + '" font-size="' + size + '" fill="' + fg + '" textLength="' + Math.min(w - 4, str.length * size * 0.62).toFixed(1) + '" lengthAdjust="spacingAndGlyphs">' + esc(str) + '</text>');
+  };
+  for (let t = 0; t <= tmax; t++) {
+    const y = top + t * rhv;
+    const full = [], topHalf = [], botHalf = [], hatch = [];
+    for (let c = 0; c < n; c++) {
+      if (D.mask[c]) {
+        const r = D.toRight[t][c], l = D.toLeft[t][c];
+        hatch.push({ c, cls: 'hatch', dim: false });
+        if (lineMode === 'both') {
+          topHalf.push({ c, cls: 's' + r, dim: filt && !matches(r) });
+          botHalf.push({ c, cls: 's' + l, dim: filt && !matches(l) });
+          if (text) { addText(left + c * cwv, y, cwv, half, '\u2192' + stName(r), stFg(r), Math.min(fs, Math.floor(half * 0.9))); addText(left + c * cwv, y + half, cwv, half, stName(l) + '\u2190', stFg(l), Math.min(fs, Math.floor(half * 0.9))); }
+        } else {
+          const v = lineMode === 'r' ? r : l;
+          full.push({ c, cls: 's' + v, dim: filt && !matches(v) });
+          if (text) addText(left + c * cwv, y, cwv, rhv, lineMode === 'r' ? '\u2192' + stName(v) : stName(v) + '\u2190', stFg(v), fs);
+        }
+      } else {
+        const v = D.rows[t][c];
+        full.push({ c, cls: 's' + v, dim: filt && !matches(v) });
+        if (text) addText(left + c * cwv, y, cwv, rhv, stName(v), stFg(v), fs);
+        if (showFrozen && cwv >= 14 && D.frozen[t][c]) texts.push('<text x="' + (left + c * cwv + cwv - 2) + '" y="' + (y + Math.min(8, rhv / 3)) + '" font-size="' + Math.min(12, fs + 2) + '" font-weight="bold" text-anchor="end" fill="' + stFg(v) + '">*</text>');
+      }
+    }
+    runs(y, rhv, hatch);
+    runs(y, rhv, full);
+    if (topHalf.length) {
+      // 故障セルの上段(右行き線)と下段(左行き線)。x 方向の余白は rect をまとめるため省く
+      const pv = cwv >= 8 ? 1 : 0;
+      runs(y + pv, half - pv - 0.5, topHalf);
+      runs(y + half + 0.5, half - pv - 0.5, botHalf);
+    }
+  }
+  // 境界線(cwv >= 8)
+  if (showGrid && labels) {
+    let d = '';
+    for (let c = 0; c <= n; c++) d += 'M' + (left + c * cwv) + ' ' + top + 'v' + ((tmax + 1) * rhv);
+    for (let t = 0; t <= tmax + 1; t++) d += 'M' + left + ' ' + (top + t * rhv) + 'h' + (n * cwv);
+    body.push('<path d="' + d + '" stroke="' + col.grid + '" stroke-width="1" fill="none"/>');
+  }
+  // 見出し
+  if (labels) {
+    body.push('<rect x="0" y="0" width="' + W + '" height="' + top + '" fill="' + col.panel + '"/>');
+    body.push('<rect x="0" y="0" width="' + left + '" height="' + H + '" fill="' + col.panel + '"/>');
+    for (let c = 0; c < n; c++) {
+      if (cwv >= 20 || (cwv >= 8 && c % 5 === 0) || (c + 1) % 50 === 0) texts.push('<text x="' + (left + c * cwv + cwv / 2) + '" y="' + (top / 2) + '" font-size="11" fill="' + (D.mask[c] ? '#ff8a5a' : col.muted) + '">' + (c + 1) + '</text>');
+    }
+    for (let t = 0; t <= tmax; t++) {
+      if (rhv >= 16 || (rhv >= 6 && t % 5 === 0) || t % 50 === 0) texts.push('<text x="' + (left - 6) + '" y="' + (top + t * rhv + rhv / 2) + '" font-size="11" text-anchor="end" fill="' + col.muted + '">t=' + t + '</text>');
+    }
+  }
+  // スタイル(使った状態だけ)
+  const style = ['<style>', 'text{font-family:ui-monospace,Consolas,monospace;text-anchor:middle;dominant-baseline:central}',
+    '.hatch{fill:' + col.hatch + '}', '.dim{fill:' + col.dim + '}'];
+  for (const cls of usedCls) {
+    if (cls.startsWith('s')) style.push('.' + cls + '{fill:' + stBg(+cls.slice(1)) + '}');
+  }
+  style.push('</style>');
+  out.push(style.join('\n'));
+  out.push('<g id="cells">'); out.push(body.join('\n')); out.push('</g>');
+  if (texts.length) { out.push('<g id="labels">'); out.push(texts.join('\n')); out.push('</g>'); }
+  out.push('</svg>');
+  const data = out.join('\n');
+  const name = 'fssp-n' + n + (m.faults ? '-f' + m.faults.replace(/[^0-9a-z]/gi, '_') : '') + (m.pure ? '-pure' : (m.a3 ? '-a3' : '')) + '-x' + cwv + '.svg';
+  const blob = new Blob([data], { type: 'image/svg+xml' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = url; a.download = name; document.body.appendChild(a); a.click();
+  setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 2000);
+  return data.length;
+}
+
 // PNG 書き出し: 時空図全体(表示中の強調・線の表示・凍結印・境界線を反映)を
 // 1 枚の canvas に描いてダウンロードする。scale は px/セル('zoom' なら現在のズーム)。
 function exportPng(scaleSel) {
@@ -492,6 +605,7 @@ $('linemode').onchange = e => { lineMode = e.target.value; draw(); };
 $('frozenmark').onclick = () => { showFrozen = !showFrozen; $('frozenmark').classList.toggle('on', showFrozen); draw(); };
 $('gridtoggle').onclick = () => { showGrid = !showGrid; $('gridtoggle').classList.toggle('on', showGrid); draw(); };
 $('png').onclick = () => exportPng($('pngscale').value);
+$('svg').onclick = () => exportSvg($('pngscale').value);
 $('theme').onclick = () => {
   const cur = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
   document.documentElement.dataset.theme = cur; try { localStorage.setItem('fssp-theme', cur); } catch (e) {}

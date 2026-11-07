@@ -73,7 +73,7 @@ python pure_tools.py add_pure      # -> ..\balzer-freeze-pure.rul.txt(--pure 用
 
 `--html` で `-d -c` と同じ内容(各時刻の状態、故障セルの右行き線/左行き線、凍結、注記)を
 自己完結の HTML に書き出します。ブラウザで開くと時刻の再生、ズーム、状態名での強調、
-セルをクリックして 1 歩前の入力と遷移規則の鍵を確認、時空図全体の PNG 保存ができます。
+セルをクリックして 1 歩前の入力と遷移規則の鍵を確認、時空図全体の PNG / SVG 保存ができます。
 
 ```
 .\target\release\fssp.exe -r ..\balzer-freeze-pure.rul.txt -s 1000 -f 201-260,451-470,701-705,901 --a3 --pure --html big.html
