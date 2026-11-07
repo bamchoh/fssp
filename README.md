@@ -92,6 +92,7 @@ python freeze_tools.py sweep_a1    # A1: 305 配置
 python freeze_tools.py sweep_a2    # A2: 487 配置
 python freeze_tools.py sweep_a3    # A3: 1695 配置
 python pure_tools.py sweep 1 1     # --pure A3: n_i >= m_i+1、最終区間 >= 1、p=1..4、n <= 16(1451 配置)
+python pure_tools.py sweep_highp 1 1500 80   # --pure A3: p=5..12 のランダム配置 1500 個(seed 1、n <= 80)
 cargo test --release
 ```
 

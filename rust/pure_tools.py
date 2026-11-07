@@ -549,6 +549,67 @@ def add_pure(verbose=True):
     copy_transients()
     n_tr = tr_count[0]
 
+    # ── 6d. 帰還対 T3bR の透過閉包 ───────────────────────────────────────────
+    #   境界条件 n_i + m_i = p − i の対ごとに a_{i+1} と b_i が重なった帰還対 T3bR が
+    #   壁から左走し、最終区間の起床済みセル(Balzer の状態、1/3 信号の位相、担体)を
+    #   横切る。add_ab の複合 X⊕T3bR は L/A..R/aF/bF/cBT の宿主にしか無く、
+    #   (rS3B, C, RT3bR) のような鍵が未定義だった(実測 n=100、p=10、境界条件 6 対)。
+    #   X⊕T3 と X⊕bR が共に純透過(目標 = 基底の目標 ⊕ 成分)な鍵から X⊕T3bR 版を作る:
+    #   右隣 (l, c, hT3bR) → t0T3bR(対が c に入る)、中央 (l, hT3bR, r) と左隣
+    #   (hT3bR, c, r) は T3 版と bR 版の目標が一致するときその目標(対は左へ去る)。
+    #   必要な状態 X⊕T3bR は基底に加える(内部セルの入力になるので 9 ビット索引内)。
+    #   対象は最終区間 I_{p+1} で起こりうる鍵だけ: 凍結変状態 F(x) の宿主・目標
+    #   (I_{p+1} は凍結しない)と境界専用状態(~ 族、T3h。右端は B2 で対処済み)を除く。
+    #   一時複合(copy_transients)の後に行う: 右端専用の一時複合には写さない。
+    n_pair = 0
+    pair_states = []
+
+    def frozen_host(x):
+        return len(x) >= 2 and x[0] == 'F' and x[1] in 'ABCLMQR' and x != 'F'
+
+    def plain(x):
+        return THAWED not in x and HOLD not in x and not frozen_host(x)
+
+    for _round in range(3):
+        added = 0
+        # 右隣
+        for (l, c, r), t1 in list(rm.items()):
+            if not r.endswith('T3') or r.endswith('T3bR'):
+                continue
+            h = r[:-2]
+            if not (plain(l) and plain(c) and plain(h)):
+                continue
+            t0 = rm.get((l, c, h))
+            if t0 is None or t0 == 'F' or not plain(t0) or t1 != t0 + 'T3' or rm.get((l, c, h + 'bR')) != t0 + 'bR':
+                continue
+            if (l, c, h + 'T3bR') in rm:
+                continue
+            for x in (h + 'T3bR', t0 + 'T3bR'):
+                if x not in nameset:
+                    add_state(x, 'B070C0')
+                    pair_states.append(x)
+            put((l, c, h + 'T3bR'), t0 + 'T3bR')
+            added += 1
+        # 中央・左隣(新設した X⊕T3bR だけ。既存の T3bR 複合の鍵は add_ab が到達分を持つ)
+        pair_set = set(pair_states)
+        for (l, c, r), t1 in list(rm.items()):
+            if not (plain(l) and plain(c) and plain(r)):
+                continue
+            if c.endswith('T3') and not c.endswith('T3bR') and (c[:-2] + 'T3bR') in pair_set:
+                h = c[:-2]
+                if rm.get((l, h + 'bR', r)) == t1 and (l, h + 'T3bR', r) not in rm:
+                    put((l, h + 'T3bR', r), t1)
+                    added += 1
+            if l.endswith('T3') and not l.endswith('T3bR') and (l[:-2] + 'T3bR') in pair_set:
+                h = l[:-2]
+                if rm.get((h + 'bR', c, r)) == t1 and (h + 'T3bR', c, r) not in rm:
+                    put((h + 'T3bR', c, r), t1)
+                    added += 1
+        n_pair += added
+        if added == 0:
+            break
+
+
     # ── 7. 射影表 PL/PR ─────────────────────────────────────────────────────
     all_names = [state_name(s) for s in states]
     pl_lines = [f'PL:{x}->{proj_left(x)}' for x in all_names if proj_left(x) != x]
@@ -570,7 +631,7 @@ def add_pure(verbose=True):
     # 状態の並び: 基底(元の全状態 + 射影先 NG2/NG3/bF2)を先頭に置いて 9 ビット索引
     # (512)に収め、境界専用の拡張状態はその後ろ(密な表には入らない)。拡張状態を
     # 含む規則は B0:(フラグ不問の疎な表)で書く。
-    base_extra = ['bF2', 'NGd']
+    base_extra = ['bF2', 'NGd'] + pair_states
     by_name = {state_name(s): s for s in states}
     order = names + base_extra + [x for x in newn if x not in base_extra]
     assert len(order) == len(states) and len(names) + len(base_extra) <= 512
@@ -590,6 +651,7 @@ def add_pure(verbose=True):
     if verbose:
         print(f'pure: wall overrides {n_force[0]}')
         print(f'pure: holds {n_hold}, bR-pickup {n_pb}, alias {n_alias}, fire-transparency {n_fire}, transient {len(transient)} ({n_tr} rules)')
+        print(f'pure: T3bR pair closure {n_pair} rules, {len(pair_states)} states')
         print(f'pure: states {len(states)} (+{len(newn)}), dense rules {len(rm)} (+{n_dense[0]}), '
               f'PL {len(pl_lines)} PR {len(pr_lines)} PJ {len(pj_lines)} B1 {len(b1)} B2 {len(b2)}, '
               f'thawed family {len(thawed)}')
@@ -697,6 +759,52 @@ def run_batch_pure(layouts):
     return res
 
 
+def sweep_highp(seed=1, count=1500, nmax=80, pmin=5, pmax=12):
+    """高 p のランダム配置スイープ(--pure --batch)。条件 n_i >= m_i+1、n_i+m_i >= p-i、
+    最終 >= 1 を満たす配置を乱数で作り、2n-2+p での SYNCED を確認する。
+    (p <= 4 の全数 sweep では帰還対 T3bR が最終区間の 1/3 信号と交差する配置が
+    出ず、(rS3B, C, RT3bR) の未定義が n=100、p=10 まで見つからなかった)"""
+    import random, collections
+    rnd = random.Random(seed)
+
+    def gen():
+        p = rnd.randint(pmin, pmax)
+        segs = []
+        for i in range(1, p + 1):
+            m = rnd.choice([1, 1, 1, 2, 2, 3, 4])
+            nmin = max(m + 1, p - i - m, 1)
+            segs.append((nmin + rnd.choice([0, 0, 0, 1, 2, 3]), m))
+        last = rnd.randint(1, 8)
+        total = sum(n + m for n, m in segs) + last
+        if total > nmax:
+            return None
+        spec, pos = [], 1
+        for n, m in segs:
+            pos += n
+            spec.append(f'{pos}' if m == 1 else f'{pos}-{pos + m - 1}')
+            pos += m
+        return (total, ','.join(spec), p)
+
+    layouts, seen = [], set()
+    while len(layouts) < count:
+        g = gen()
+        if g and (g[0], g[1]) not in seen:
+            seen.add((g[0], g[1]))
+            layouts.append(g)
+    results = run_batch_pure(layouts)
+    fails, byp = [], collections.Counter()
+    for (n, spec, p) in layouts:
+        byp[p] += 1
+        synced, t = results.get((n, spec), (False, -1))
+        if not synced or t != 2 * n - 2 + p:
+            fails.append((n, spec, synced, t))
+    print(f'high-p sweep (seed {seed}, n <= {nmax}): {len(layouts)} layouts, {len(fails)} failures; '
+          f'p histogram {sorted(byp.items())}')
+    for x in fails[:15]:
+        print('  FAIL', x)
+    return fails
+
+
 def sweep_pure(slack=2, last_min=2, nmax2=16, nmax3=16, show=10, nmax4=0):
     kw_nmax4[0] = nmax4
     lay = layouts_pure(nmax2=nmax2, nmax3=nmax3, slack=slack, last_min=last_min)
@@ -721,6 +829,10 @@ if __name__ == '__main__':
     elif cmd == 'sweep':
         sweep_pure(slack=int(sys.argv[2]) if len(sys.argv) > 2 else 2,
                    last_min=int(sys.argv[3]) if len(sys.argv) > 3 else 2)
+    elif cmd == 'sweep_highp':
+        sweep_highp(seed=int(sys.argv[2]) if len(sys.argv) > 2 else 1,
+                    count=int(sys.argv[3]) if len(sys.argv) > 3 else 1500,
+                    nmax=int(sys.argv[4]) if len(sys.argv) > 4 else 80)
     elif cmd == 'run':
         out, err = run_pure(int(sys.argv[2]), sys.argv[3], dump='-d' in sys.argv, trace=True)
         print(out)
