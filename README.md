@@ -28,7 +28,7 @@ cargo build --release
 
 ```
 python freeze_tools.py add_ab      # -> ..\balzer-freeze-full.rul.txt(従来モード用)
-python pure_tools.py add_pure      # -> ..\balzer-freeze-pure.rul.txt(--pure 用、約 1 分)
+python pure_tools.py add_pure      # -> ..\balzer-freeze-pure.rul.txt(--pure 用、約 2 分)
 ```
 
 | 規則表 | 用途 |
